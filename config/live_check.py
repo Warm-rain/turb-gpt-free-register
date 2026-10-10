@@ -4,6 +4,9 @@ from config.env_loader import apply_env_overrides
 
 # "protocol" = 纯协议重新登录；"cloak" = CloakBrowser 浏览器重新登录。
 # 仅支持以上两种取值，不自动跟随 REGISTRATION_DRIVER / CODEX_OAUTH_DRIVER。
+# 支持多途径优先级链：例如 "cloak, protocol" 表示先用 CloakBrowser 查活，
+# 整层失败（既没查活成功也没判定废号）后再用纯协议查活；每层各自跑满
+# LIVE_CHECK_MAX_ATTEMPTS 次完整登录尝试。单个取值 = 只有一层。
 # Cloak 查活复用 config.cloakbrowser 的运行参数，但强制使用临时独立上下文，
 # 结束时关闭浏览器；代理由现有查活网络路由决定。
 LIVE_CHECK_DRIVER: str = "protocol"

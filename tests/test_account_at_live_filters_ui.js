@@ -9,6 +9,7 @@ const source = fs.readFileSync(path.join(root, 'webui/static/console.js'), 'utf8
 const html = fs.readFileSync(path.join(root, 'webui/templates/index.html'), 'utf8');
 const legacy = fs.readFileSync(path.join(root, 'webui/templates/index_legacy.html'), 'utf8');
 const accountsPage = fs.readFileSync(path.join(root, 'frontend/app/pages/accounts.vue'), 'utf8');
+const accountsUtil = fs.readFileSync(path.join(root, 'frontend/app/utils/accounts.ts'), 'utf8');
 
 function functionSource(script, name) {
   const match = new RegExp(`^(?:async )?function ${name}\\(`, 'm').exec(script);
@@ -112,4 +113,20 @@ test('Nuxt 账号页提供 AT 与查活筛选并显示 AT 过期徽章', () => {
   assert.match(accountsPage, /function resetFilters\(\)[\s\S]*?at_status: "",\s*\n\s*live_status: "",/);
   // 过期账号在状态列显示徽章。
   assert.match(accountsPage, /v-if="row\.at_expired"[\s\S]{0,200}<UiBadge value="expired"/);
+});
+
+test('Nuxt 账号页显示自动推算的 AT 到期时间', () => {
+  // 后端下发的 at_state/at_expires_at 由 accountTokenInfo 统一转成展示文本。
+  assert.match(accountsUtil, /export function accountTokenInfo/);
+  assert.match(accountsUtil, /at_expires_at\?: string/);
+  assert.match(accountsUtil, /有效至/);
+  // 过期与未过期都在状态列显示具体到期时间，而不是只有一个布尔徽章。
+  assert.match(accountsPage, /accountTokenInfo\(row\)\.expiresLabel/);
+  assert.match(accountsPage, /v-else-if="row\.has_access_token"/);
+  assert.match(accountsPage, /class="at-expiry"/);
+});
+
+test('旧版控制台同样显示 AT 到期时间', () => {
+  assert.match(source, /r\.at_expires_at[\s\S]{0,160}AT 到期/);
+  assert.match(legacy, /r\.at_expires_at[\s\S]{0,160}AT 到期/);
 });

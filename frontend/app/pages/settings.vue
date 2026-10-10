@@ -7,6 +7,7 @@ interface Field {
   help: string;
   type: string;
   secret?: boolean;
+  chain?: boolean;
   value: any;
   choices?: { value: string; label: string }[];
 }
@@ -20,6 +21,7 @@ const activeGroup = ref(""),
   loading = ref(true),
   busy = ref(false),
   error = ref("");
+const chainDraft = reactive<Record<string, string>>({});
 const groups = computed(() => [...new Set(fields.value.map((f) => f.group))]);
 const shown = computed(() =>
   fields.value.filter((f) =>
@@ -39,6 +41,56 @@ function asInput(field: Field) {
   return Array.isArray(field.value)
     ? field.value.join("\n")
     : (field.value ?? (field.type === "bool" ? false : ""));
+}
+// ---- 多途径优先级链（注册 / 查活 / Codex 授权）----
+// 配置项本身仍是字符串：链在界面上按顺序拆成若干层，保存时再拼回 "a, b, c"。
+function chainItems(field: Field): string[] {
+  const raw = String(values[field.key] ?? "")
+    .replace(/->|=>|→|⇒|>/g, ",")
+    .toLowerCase();
+  return raw
+    .split(/[,;|，；、\s]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+function chainLabel(field: Field, item: string) {
+  const hit = field.choices?.find((choice) => choice.value === item);
+  return hit?.label || item;
+}
+function chainSet(field: Field, items: string[]) {
+  values[field.key] = items.join(", ");
+}
+function chainRemaining(field: Field) {
+  const used = new Set(chainItems(field));
+  return (field.choices ?? []).filter((choice) => !used.has(choice.value));
+}
+function chainAppend(field: Field) {
+  const items = chainItems(field);
+  const remaining = (field.choices ?? []).filter(
+    (choice) => !items.includes(choice.value),
+  );
+  const draft = chainDraft[field.key];
+  // 下拉里选中的途径如果已经在链里（或已被移除），退回第一个未使用的途径，
+  // 保证同一个途径不会在链里出现两次。
+  const next =
+    draft && remaining.some((choice) => choice.value === draft)
+      ? draft
+      : remaining[0]?.value;
+  if (!next) return;
+  chainSet(field, [...items, next]);
+  chainDraft[field.key] = "";
+}
+function chainMove(field: Field, index: number, delta: number) {
+  const items = chainItems(field);
+  const target = index + delta;
+  if (target < 0 || target >= items.length) return;
+  [items[index], items[target]] = [items[target], items[index]];
+  chainSet(field, items);
+}
+function chainRemove(field: Field, index: number) {
+  const items = chainItems(field);
+  items.splice(index, 1);
+  chainSet(field, items);
 }
 function isSecret(field: Field) {
   return (
@@ -154,6 +206,139 @@ async function runUpdate() {
     updating.value = false;
   }
 }
+// ---- 上传 Key 分配：多个 Key 存数据库，明文只在生成时回显一次 ----
+interface UploadKeyItem {
+  id: number;
+  label: string;
+  note: string;
+  enabled: boolean;
+  use_count: number;
+  last_used_at: string;
+  masked: string;
+  display_suffix: string;
+}
+const uploadKeys = ref<UploadKeyItem[]>([]),
+  uploadKeysLoading = ref(true),
+  uploadKeysError = ref(""),
+  legacyUploadKey = ref(false),
+  uploadKeyBusy = ref(false);
+const uploadKeyOpen = ref(false),
+  editingUploadKey = ref<UploadKeyItem | null>(null),
+  uploadKeyError = ref("");
+const uploadKeyForm = reactive({ label: "", note: "", enabled: true });
+const issuedKey = ref(""),
+  issuedLabel = ref(""),
+  issuedOpen = ref(false);
+async function loadUploadKeys() {
+  uploadKeysLoading.value = true;
+  uploadKeysError.value = "";
+  try {
+    const result = await api.request<{ items: UploadKeyItem[]; legacy_env_configured: boolean }>(
+      "/api/upload-keys",
+    );
+    uploadKeys.value = result.items || [];
+    legacyUploadKey.value = result.legacy_env_configured === true;
+  } catch (e: any) {
+    uploadKeysError.value = e.message;
+  } finally {
+    uploadKeysLoading.value = false;
+  }
+}
+function openUploadKey(item: UploadKeyItem | null = null) {
+  editingUploadKey.value = item;
+  uploadKeyError.value = "";
+  uploadKeyForm.label = item?.label || "";
+  uploadKeyForm.note = item?.note || "";
+  uploadKeyForm.enabled = item ? item.enabled : true;
+  uploadKeyOpen.value = true;
+}
+function showIssuedKey(item: UploadKeyItem & { secret?: string }) {
+  if (!item?.secret) return;
+  issuedKey.value = item.secret;
+  issuedLabel.value = item.label || "未命名 Key";
+  issuedOpen.value = true;
+}
+async function saveUploadKey() {
+  uploadKeyBusy.value = true;
+  uploadKeyError.value = "";
+  try {
+    const body = { ...uploadKeyForm };
+    const editing = editingUploadKey.value;
+    const result = await api.request<{ item: UploadKeyItem & { secret?: string } }>(
+      editing ? `/api/upload-keys/${editing.id}` : "/api/upload-keys",
+      { method: editing ? "PUT" : "POST", body },
+    );
+    uploadKeyOpen.value = false;
+    if (!editing) showIssuedKey(result.item);
+    toast.success(editing ? "Key 已更新" : "Key 已生成");
+    await loadUploadKeys();
+  } catch (e: any) {
+    uploadKeyError.value = e.message;
+  } finally {
+    uploadKeyBusy.value = false;
+  }
+}
+async function rotateUploadKey(item: UploadKeyItem) {
+  if (
+    !window.confirm(
+      `确定为「${item.label || item.masked}」生成新的 Key？旧 Key 会立即失效。`,
+    )
+  )
+    return;
+  uploadKeyBusy.value = true;
+  try {
+    const result = await api.request<{ item: UploadKeyItem & { secret?: string } }>(
+      `/api/upload-keys/${item.id}/rotate`,
+      { method: "POST" },
+    );
+    showIssuedKey(result.item);
+    await loadUploadKeys();
+  } catch (e: any) {
+    toast.error(e.message);
+  } finally {
+    uploadKeyBusy.value = false;
+  }
+}
+async function toggleUploadKey(item: UploadKeyItem, enabled: boolean) {
+  uploadKeyBusy.value = true;
+  try {
+    await api.request(`/api/upload-keys/${item.id}`, {
+      method: "PUT",
+      body: { enabled },
+    });
+    toast.success(enabled ? "已启用该 Key" : "已停用该 Key");
+    await loadUploadKeys();
+  } catch (e: any) {
+    toast.error(e.message);
+  } finally {
+    uploadKeyBusy.value = false;
+  }
+}
+async function removeUploadKey(item: UploadKeyItem) {
+  if (!window.confirm(`删除「${item.label || item.masked}」后，正在使用它的上传者将立即失败。继续？`))
+    return;
+  uploadKeyBusy.value = true;
+  try {
+    await api.request(`/api/upload-keys/${item.id}`, { method: "DELETE" });
+    toast.success("Key 已删除");
+    await loadUploadKeys();
+  } catch (e: any) {
+    toast.error(e.message);
+  } finally {
+    uploadKeyBusy.value = false;
+  }
+}
+async function copyIssuedKey() {
+  try {
+    await navigator.clipboard.writeText(issuedKey.value);
+    toast.success("Key 已复制");
+  } catch {
+    toast.info("复制失败，请手动选择文本复制");
+  }
+}
+function uploadKeyTime(item: UploadKeyItem) {
+  return item.last_used_at ? item.last_used_at.replace("T", " ") : "尚未使用";
+}
 async function helper(action: string) {
   if (
     changed.value.length &&
@@ -198,6 +383,7 @@ function preventLoss(event: BeforeUnloadEvent) {
 }
 onMounted(() => {
   void load();
+  void loadUploadKeys();
   void refreshUpdate();
   window.addEventListener("beforeunload", preventLoss);
 });
@@ -320,6 +506,98 @@ onBeforeRouteLeave(
         </div>
       </div>
     </section>
+    <section class="card upload-keys-card">
+      <div class="card-header">
+        <div>
+          <h2>上传 Key 分配</h2>
+          <p class="muted">
+            公共页面 /upload 的可用 Key。可给每个上传者分配一个；停用或删除后该 Key 立即失效。
+          </p>
+        </div>
+        <div class="inline">
+          <button
+            class="btn btn-sm"
+            :disabled="uploadKeysLoading"
+            @click="loadUploadKeys"
+          >
+            <UiIcon name="refresh" />刷新
+          </button>
+          <button class="btn btn-primary btn-sm" @click="openUploadKey()">
+            <UiIcon name="plus" />新增 Key
+          </button>
+        </div>
+      </div>
+      <p v-if="uploadKeysError" class="alert alert-error" role="alert">
+        {{ uploadKeysError }}
+        <button class="btn btn-sm" @click="loadUploadKeys">重试</button>
+      </p>
+      <p v-if="legacyUploadKey" class="alert alert-warning" role="alert">
+        旧版配置项 <code>PUBLIC_UPLOAD_KEY</code> 也处于生效状态；如只想使用下方分配的
+        Key，请在「WebUI 授权」分组中清空它。
+      </p>
+      <div v-if="uploadKeys.length" class="table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>备注名</th>
+              <th>Key</th>
+              <th>状态</th>
+              <th>上传次数</th>
+              <th>最近使用</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="item in uploadKeys" :key="item.id">
+              <td>
+                <strong>{{ item.label || "未命名" }}</strong>
+                <small v-if="item.note" class="muted">{{ item.note }}</small>
+              </td>
+              <td class="mono">{{ item.masked }}</td>
+              <td>
+                <UiBadge :value="item.enabled ? 'enabled' : 'disabled'" />
+              </td>
+              <td>{{ item.use_count }}</td>
+              <td class="muted">{{ uploadKeyTime(item) }}</td>
+              <td>
+                <div class="inline">
+                  <button
+                    class="btn btn-sm"
+                    :disabled="uploadKeyBusy"
+                    @click="openUploadKey(item)"
+                  >
+                    编辑</button
+                  ><button
+                    class="btn btn-sm"
+                    :disabled="uploadKeyBusy"
+                    @click="rotateUploadKey(item)"
+                  >
+                    换新</button
+                  ><button
+                    class="btn btn-sm"
+                    :disabled="uploadKeyBusy"
+                    @click="toggleUploadKey(item, !item.enabled)"
+                  >
+                    {{ item.enabled ? "停用" : "启用" }}</button
+                  ><button
+                    class="btn btn-sm btn-danger"
+                    :disabled="uploadKeyBusy"
+                    @click="removeUploadKey(item)"
+                  >
+                    删除
+                  </button>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <UiEmpty
+        v-else
+        :title="uploadKeysLoading ? '正在加载…' : '尚未分配上传 Key'"
+        description="新增后把 Key 发给上传者；公共上传页支持把 Key 保存在本机浏览器。"
+      />
+    </section>
     <div class="settings-layout">
       <aside class="card settings-nav">
         <div class="settings-search">
@@ -370,7 +648,84 @@ onBeforeRouteLeave(
               v-if="field.type === 'bool'"
               v-model="values[field.key]"
               type="checkbox"
-              :aria-label="field.label" /><select
+              :aria-label="field.label" /><div
+              v-else-if="field.chain && field.choices?.length"
+              class="driver-chain"
+            >
+              <ol class="driver-chain-list">
+                <li
+                  v-for="(item, index) in chainItems(field)"
+                  :key="`${field.key}-${index}-${item}`"
+                  class="driver-chain-item"
+                >
+                  <span class="driver-chain-order">{{ index + 1 }}</span>
+                  <span class="driver-chain-name">{{
+                    chainLabel(field, item)
+                  }}</span>
+                  <code class="driver-chain-id">{{ item }}</code>
+                  <span class="driver-chain-actions">
+                    <button
+                      type="button"
+                      class="btn btn-sm"
+                      :disabled="index === 0"
+                      :aria-label="`上移 ${chainLabel(field, item)}`"
+                      @click="chainMove(field, index, -1)"
+                    >
+                      ↑
+                    </button>
+                    <button
+                      type="button"
+                      class="btn btn-sm"
+                      :disabled="index === chainItems(field).length - 1"
+                      :aria-label="`下移 ${chainLabel(field, item)}`"
+                      @click="chainMove(field, index, 1)"
+                    >
+                      ↓
+                    </button>
+                    <button
+                      type="button"
+                      class="btn btn-sm"
+                      :aria-label="`移除 ${chainLabel(field, item)}`"
+                      @click="chainRemove(field, index)"
+                    >
+                      ✕
+                    </button>
+                  </span>
+                </li>
+                <li v-if="!chainItems(field).length" class="driver-chain-empty">
+                  尚未选择途径，请从下方添加
+                </li>
+              </ol>
+              <div v-if="chainRemaining(field).length" class="driver-chain-add">
+                <select
+                  v-model="chainDraft[field.key]"
+                  class="select"
+                  :aria-label="`${field.label}：选择要添加的途径`"
+                >
+                  <option
+                    v-for="choice in chainRemaining(field)"
+                    :key="choice.value"
+                    :value="choice.value"
+                  >
+                    {{ choice.label }}
+                  </option>
+                </select>
+                <button type="button" class="btn" @click="chainAppend(field)">
+                  ＋ 添加为下一层
+                </button>
+              </div>
+              <p class="driver-chain-hint">
+                自上而下按优先级执行，当前层整体失败才切换到下一层。
+                <input
+                  v-model="values[field.key]"
+                  class="input driver-chain-raw"
+                  :aria-label="`${field.label}：手动编辑途径链`"
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+              </p>
+            </div>
+            <select
               v-else-if="field.choices?.length"
               v-model="values[field.key]"
               class="select"
@@ -439,9 +794,89 @@ onBeforeRouteLeave(
     <UiModal v-model:open="helperOpen" title="团队与项目">
       <pre class="log">{{ helperResult }}</pre>
     </UiModal>
+    <UiModal
+      v-model:open="uploadKeyOpen"
+      :title="editingUploadKey ? '编辑上传 Key' : '新增上传 Key'"
+    >
+      <p v-if="uploadKeyError" class="alert alert-error" role="alert">
+        {{ uploadKeyError }}
+      </p>
+      <form id="upload-key-form" class="stack" @submit.prevent="saveUploadKey">
+        <label class="field"
+          >备注名<input
+            v-model="uploadKeyForm.label"
+            class="input"
+            maxlength="120"
+            placeholder="例如 运营-张三"
+          />
+          <small>用于区分上传者；上传汇总通知的「上传来源」会带上这个名字。</small>
+        </label>
+        <label class="field"
+          >备注<input
+            v-model="uploadKeyForm.note"
+            class="input"
+            maxlength="2000"
+            placeholder="可选"
+        /></label>
+        <label class="inline"
+          ><input v-model="uploadKeyForm.enabled" type="checkbox" />启用此
+          Key</label
+        >
+        <p v-if="!editingUploadKey" class="muted">
+          保存后由服务端生成 Key，且只显示一次；请立即复制并发给上传者。
+        </p>
+      </form>
+      <template #footer
+        ><button class="btn" @click="uploadKeyOpen = false">取消</button
+        ><button class="btn btn-primary" form="upload-key-form" :disabled="uploadKeyBusy">
+          {{ editingUploadKey ? "保存" : "生成 Key" }}
+        </button></template
+      >
+    </UiModal>
+    <UiModal v-model:open="issuedOpen" title="新的上传 Key">
+      <p>
+        请立即复制并发给上传者，<strong>关闭后无法再次查看</strong>。
+      </p>
+      <div class="issued-key">
+        <code>{{ issuedKey }}</code
+        ><button class="btn btn-sm" @click="copyIssuedKey">
+          <UiIcon name="check" />复制
+        </button>
+      </div>
+      <p class="muted">{{ issuedLabel }} · 公共上传页 /upload</p>
+    </UiModal>
   </div>
 </template>
 <style scoped>
+.upload-keys-card {
+  margin-bottom: 22px;
+}
+.upload-keys-card .card-header p {
+  font-size: 11px;
+  margin-top: 4px;
+  max-width: 620px;
+}
+.upload-keys-card .data-table td:first-child small {
+  display: block;
+  font-size: 10px;
+}
+.issued-key {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 14px 0;
+  padding: 12px 14px;
+  border: 1px solid #cfe0ff;
+  border-radius: 6px;
+  background: #f4f8ff;
+}
+.issued-key code {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
 .update-card {
   margin-bottom: 22px;
 }
@@ -606,6 +1041,85 @@ onBeforeRouteLeave(
   justify-self: end;
   width: 18px;
   height: 18px;
+}
+/* 多途径优先级链：整行展示，按顺序列出每一层 */
+.driver-chain {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 4px;
+}
+.driver-chain-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+}
+.driver-chain-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 1px solid #e3e8ef;
+  border-radius: 6px;
+  background: #fbfcfd;
+}
+.driver-chain-order {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #eaf1ff;
+  color: #3b66f5;
+  font-size: 10px;
+  line-height: 20px;
+  text-align: center;
+}
+.driver-chain-name {
+  font-size: 12px;
+}
+.driver-chain-id {
+  font-size: 9px;
+  color: #b2bac3;
+}
+.driver-chain-actions {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 4px;
+}
+.driver-chain-actions .btn {
+  min-width: 28px;
+  padding: 2px 6px;
+}
+.driver-chain-empty {
+  padding: 10px 12px;
+  border: 1px dashed #d8dee7;
+  border-radius: 6px;
+  font-size: 11px;
+  color: #96a0ae;
+}
+.driver-chain-add {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.driver-chain-add .select {
+  flex: 1;
+  min-width: 0;
+}
+.driver-chain-hint {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 10px;
+  color: #a3adb7;
+  margin: 0;
+}
+.driver-chain-raw {
+  font-family: inherit;
 }
 .settings-fields > .inline {
   padding-top: 20px;

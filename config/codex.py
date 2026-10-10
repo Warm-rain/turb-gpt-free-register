@@ -50,12 +50,16 @@ CODEX_AGENT_WORKERS: int = 3
 # 注册成功后是否自动跑 Codex 授权（True=自动，False=跳过）
 ENABLE_CODEX_AUTO: bool = False
 
-# Codex OAuth 授权驱动：
+# Codex OAuth 授权驱动（支持多途径优先级链）：
 #   "protocol" = 原有 curl_cffi 协议授权
 #   "roxy"     = 调用 RoxyBrowser 指纹浏览器完成授权页面/手机验证/回调捕获
 #   "cloak"       = 调用 CloakBrowser 完成授权页面/手机验证/回调捕获
 #   "browser_use" = 调用 Browser Use Cloud 完成授权页面/手机验证/回调捕获
-#   "same_as_registration" = 跟随 REGISTRATION_DRIVER
+#   "skyvern"     = 调用 Skyvern Browser Sessions 完成授权
+#   "same_as_registration" = 跟随 REGISTRATION_DRIVER（含其优先级链）
+# 可以按优先级写多途径，用逗号 / 分号 / 空格 / 箭头分隔：
+#   "roxy, protocol" 表示先用 roxy 授权，整层失败（没拿到授权凭据）再换纯协议。
+# 单个取值 = 只有一层，与旧配置完全兼容。
 CODEX_OAUTH_DRIVER: str = "roxy"
 
 

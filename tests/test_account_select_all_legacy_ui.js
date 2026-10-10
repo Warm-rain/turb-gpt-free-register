@@ -378,7 +378,7 @@ test('历史版所有批量接口分片提交，ZIP 下载保留单次上限提�
     assert.match(legacy, new RegExp(`postAccountBatches\\('${escaped}'[\\s\\S]{0,120}?accountBatchLimit\\(`), endpoint);
   }
   // 换邮箱单个账号走单账号接口，批量走 change-email-bulk 分片。
-  assert.match(legacy, /postAccountBatches\('\/api\/accounts\/change-email-bulk', \{source: source\.trim\(\)\}, ids, accountBatchLimit\('email'\)/);
+  assert.match(legacy, /postAccountBatches\('\/api\/accounts\/change-email-bulk', payload, ids, accountBatchLimit\('email'\)/);
   assert.match(legacy, /\/api\/accounts\/\$\{ids\[0\]\}\/change-email/);
   // 设置分组通过分组选择器注入的 request 包装分片。
   assert.match(legacy, /path !== '\/api\/accounts\/group-bulk'/);

@@ -12,7 +12,6 @@ Flask 本地控制台。
 """
 import logging
 import json
-import hmac
 import threading
 import time
 import uuid
@@ -34,10 +33,22 @@ from webui.payment_provider_routes import register_payment_provider_routes
 from webui.scan_routes import register_scan_routes
 from webui.task_routes import register_task_routes
 from webui.update_routes import register_update_routes
+from webui.upload_key_routes import register_upload_key_routes
 
 logger = logging.getLogger(__name__)
 
 _POOL_SOURCE_VALUES = frozenset(("all", "outlook", "generic_api", "imap", "cloudflare_domain"))
+
+
+def _record_task_batch(job_type: str, items, label: str = "") -> str | None:
+    """批量接口登记「一次提交」的批次；登记失败不影响任务本身。"""
+    from core import task_center_store
+
+    try:
+        return task_center_store.record_batch(job_type, items, label=label)
+    except Exception:
+        logger.exception("登记任务批次失败 job_type=%s", job_type)
+        return None
 
 
 def _pool_source_arg(default: str = "outlook") -> str:
@@ -153,6 +164,16 @@ def _compact_account_for_list(row: dict) -> dict:
 
     # 「AT 已过期」只暴露布尔结论，不下发 access_token；与 at_status 筛选同一判定。
     out["at_expired"] = bool(row.get("at_expired"))
+    # 同时下发同一判定得出的状态与自动推算的到期时间，供列表直接展示。
+    # 到期时间来自 token_expires_at 或 access_token 的 JWT exp，本身不含 Token 内容。
+    at_state = str(row.get("at_state") or "").strip().lower()
+    if not at_state:
+        at_state = "expired" if out["at_expired"] else ""
+    if at_state in {"expired", "valid", "unknown"}:
+        out["at_state"] = at_state
+    at_expires_at = str(row.get("at_expires_at") or "").strip()
+    if at_expires_at:
+        out["at_expires_at"] = at_expires_at
 
     # 下面字段仅在有值时返回，避免每行堆满 null/空字符串/内部状态。
     optional_keys = (
@@ -468,6 +489,7 @@ def create_app(auth_code: str | None = None, *, data_dir=None) -> Flask:
     register_extract_routes(app)
     register_scan_routes(app)
     register_payment_provider_routes(app)
+    register_upload_key_routes(app)
     register_task_routes(app)
     register_update_routes(app)
     register_frontend(app)
@@ -494,15 +516,20 @@ def create_app(auth_code: str | None = None, *, data_dir=None) -> Flask:
 
     @app.post("/api/public/accounts/import", endpoint="api_public_accounts_import")
     def api_public_accounts_import():
-        """公开导入账号；必须提供服务端配置的 PUBLIC_UPLOAD_KEY。"""
-        from config.env_loader import env_str
+        """公开导入账号；必须提供后台分配的上传 Key（兼容旧版单 Key 环境变量）。"""
+        from core import upload_key_store as upload_keys
 
-        configured_key = env_str("PUBLIC_UPLOAD_KEY", "")
-        supplied_key = request.headers.get("X-Upload-Key", "")
-        if not configured_key:
+        supplied_key = (request.headers.get("X-Upload-Key") or "").strip()
+        if not upload_keys.has_active_keys():
             return jsonify({"ok": False, "error": "公共上传功能尚未配置 Key"}), 503
-        if not hmac.compare_digest(supplied_key.strip().encode("utf-8"), configured_key.encode("utf-8")):
+        matched_key = upload_keys.verify_upload_key(supplied_key)
+        if matched_key is None:
             return jsonify({"ok": False, "error": "Key 无效"}), 401
+        source = "公共上传"
+        if matched_key.get("id") is not None:
+            # 旧版环境变量 Key 保持原来源文案；数据库里分配的 Key 带上备注名，便于回溯。
+            label = (matched_key.get("label") or "").strip() or f"Key #{matched_key['id']}"
+            source = f"公共上传（{label}）"
 
         request.max_content_length = 11 * 1024 * 1024
         data = request.get_json(silent=True)
@@ -526,7 +553,8 @@ def create_app(auth_code: str | None = None, *, data_dir=None) -> Flask:
             }), 400
 
         inserted, skipped_details, name_details = import_existing_accounts(records)
-        _notify_uploaded_accounts(records, inserted, skipped_details, parse_errors, "公共上传")
+        _notify_uploaded_accounts(records, inserted, skipped_details, parse_errors, source)
+        upload_keys.record_use(matched_key.get("id"))
         live_checks = _queue_import_live_checks(records, skipped_details)
         name_warnings = [
             {"email": item["email"], "reason": "账号已导入，用户名获取失败：" + item["error"]}
@@ -1298,7 +1326,9 @@ def create_app(auth_code: str | None = None, *, data_dir=None) -> Flask:
                 started.append({"id": acc_id, "email": acc.get("email"), "status": "queued"})
             else:
                 skipped.append({"id": acc_id, "email": acc.get("email"), "reason": result.get("error")})
-        return jsonify({"ok": True, "started": started, "started_count": len(started), "skipped": skipped}), 202
+        batch_id = _record_task_batch("email_change", started)
+        return jsonify({"ok": True, "started": started, "started_count": len(started), "skipped": skipped,
+                        "task_batch_id": batch_id}), 202
 
     @app.post("/api/accounts/totp-setup-bulk")
     def api_accounts_totp_setup_bulk():
@@ -1393,6 +1423,7 @@ def create_app(auth_code: str | None = None, *, data_dir=None) -> Flask:
             "skipped": skipped,
             "skipped_count": len(skipped),
             "queue": twofa_service.queue_settings(),
+            "task_batch_id": _record_task_batch("totp_setup", started),
         }), 202
 
     @app.post("/api/accounts/note-bulk")
@@ -1543,6 +1574,7 @@ def create_app(auth_code: str | None = None, *, data_dir=None) -> Flask:
             "failed_count": len(failed),
             "skipped": skipped,
             "queue": live_check_service.queue_settings(),
+            "task_batch_id": _record_task_batch("live_check", started),
         }), 202
 
 
@@ -1643,6 +1675,7 @@ def create_app(auth_code: str | None = None, *, data_dir=None) -> Flask:
             "failed_count": len(failed),
             "skipped": skipped,
             "skipped_count": len(skipped),
+            "task_batch_id": _record_task_batch("plan_check", started),
         }), 202
 
     @app.post("/api/accounts/check-quota")
@@ -1742,6 +1775,7 @@ def create_app(auth_code: str | None = None, *, data_dir=None) -> Flask:
             "failed_count": len(failed),
             "skipped": skipped,
             "skipped_count": len(skipped),
+            "task_batch_id": _record_task_batch("quota_check", started),
         }), 202
 
     @app.get("/api/extract-link/cdk")
@@ -1875,6 +1909,7 @@ def create_app(auth_code: str | None = None, *, data_dir=None) -> Flask:
             "failed_count": len(failed),
             "skipped": skipped,
             "skipped_count": len(skipped),
+            "task_batch_id": _record_task_batch("extract_link", started),
         }), (503 if accounts and not started and not busy and failed else 202)
 
     @app.post("/api/accounts/codex-agent")
@@ -1968,6 +2003,7 @@ def create_app(auth_code: str | None = None, *, data_dir=None) -> Flask:
             "failed_count": len(failed),
             "skipped": skipped,
             "skipped_count": len(skipped),
+            "task_batch_id": _record_task_batch("codex_agent", started),
         }), 202
 
     def _codex_agent_auth_for_account(acc: dict) -> tuple[str, str]:
@@ -3184,6 +3220,7 @@ def create_app(auth_code: str | None = None, *, data_dir=None) -> Flask:
                         logger.exception(f"[Codex 批量补跑] 子任务异常 batch={batch}")
             logger.info(f"[Codex 批量补跑] 完成 batch={batch}")
 
+        task_batch_id = _record_task_batch("codex_retry", selected)
         threading.Thread(
             target=_bulk_runner,
             args=(selected, workers, batch_id),
@@ -3197,6 +3234,7 @@ def create_app(auth_code: str | None = None, *, data_dir=None) -> Flask:
             "started_count": len(selected),
             "skipped": skipped,
             "batch_id": batch_id,
+            "task_batch_id": task_batch_id,
         })
 
     @app.get("/api/codex/retry-log")
@@ -3367,6 +3405,7 @@ def create_app(auth_code: str | None = None, *, data_dir=None) -> Flask:
                 "jobs": jobs,
                 "warning": f"手动 OTP 模式：将使用 {reg_email}；验证码请在任务页提交",
                 "workers": workers,
+                "task_batch_id": _record_task_batch("registration", jobs),
             })
         sources = parse_email_sources(_email_cfg.EMAIL_SOURCE)
         if "gptmail" in sources:
@@ -3487,7 +3526,8 @@ def create_app(auth_code: str | None = None, *, data_dir=None) -> Flask:
             if pool.get("available", 0) < count:
                 warning = f"可用邮箱仅 {pool.get('available', 0)} 个，少于任务数 {count}，不足的会失败"
         jobs = svc.submit_registration(count=count, workers=workers)
-        return jsonify({"ok": True, "submitted": len(jobs), "jobs": jobs, "warning": warning, "workers": workers})
+        return jsonify({"ok": True, "submitted": len(jobs), "jobs": jobs, "warning": warning, "workers": workers,
+                        "task_batch_id": _record_task_batch("registration", jobs)})
 
     @app.get("/api/manual-otp/waiting")
     def api_manual_otp_waiting():
@@ -3596,6 +3636,19 @@ def create_app(auth_code: str | None = None, *, data_dir=None) -> Flask:
                 reused.append(result)
             else:
                 started.append(result)
+        # 一次批量重试可能同时包含注册与 Codex 补跑，按类型分别登记批次。
+        by_kind: dict[str, list[dict]] = {}
+        for item in started:
+            job = item.get("job") or {}
+            if job.get("id") is None:
+                continue
+            kind = "codex_retry" if job.get("job_type") == "codex_retry" else "registration"
+            key = job.get("account_id") if kind == "codex_retry" else job.get("id")
+            if key in (None, ""):
+                continue
+            by_kind.setdefault(kind, []).append({"id": key, "email": job.get("email")})
+        task_batch_ids = [batch for kind, members in by_kind.items()
+                          if (batch := _record_task_batch(kind, members))]
         return jsonify({
             "ok": True,
             "started": started,
@@ -3605,6 +3658,8 @@ def create_app(auth_code: str | None = None, *, data_dir=None) -> Flask:
             "skipped": skipped,
             "skipped_count": len(skipped),
             "workers": workers,
+            "task_batch_id": task_batch_ids[0] if task_batch_ids else None,
+            "task_batch_ids": task_batch_ids,
         })
 
     @app.post("/api/jobs/<int:job_id>/delete")

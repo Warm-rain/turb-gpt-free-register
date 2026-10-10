@@ -304,85 +304,133 @@ def _run_live_check(*, account_id: int, email: str, proxy: str | None, trigger: 
             f"fallback_reason={route.get('proxy_fallback_reason') or '-'}"
         )
         # 整链重试与阶段内重试分开计数。每轮使用独立会话，池非空时绝不直连。
+        # 多途径优先级链：每一层途径各自跑满整链重试，整层失败（既没查活成功也没
+        # 判定废号）才切到下一层。
+        from core import driver_chain
+        drivers = driver_chain.live_check_drivers()
         max_attempts, retry_delay = _live_retry_settings(proxy_cfg)
-        used_proxies: set[str] = set()
+        if len(drivers) > 1:
+            _append_log(
+                email,
+                f"[查活] 途径优先级链：{driver_chain.describe_chain(drivers)}"
+                f"（每层最多 {max_attempts} 次完整登录尝试）",
+            )
         result: dict = {"ok": False, "status": "failed", "error": "查活未执行"}
-        attempt = 0
-        while attempt < max_attempts:
-            attempt += 1
+        layer_used = 1
+        for layer_index, layer_driver in enumerate(drivers):
+            layer = layer_index + 1
+            layer_used = layer
             task_control.checkpoint(KIND, account_id)
-            selected_proxy = str(route.get("proxy") or "").strip()
-            if selected_proxy:
-                used_proxies.add(selected_proxy)
-            _append_log(
-                email,
-                f"[查活] 完整登录尝试 {attempt}/{max_attempts}："
-                f"{_mask_proxy(selected_proxy) or 'direct'}",
-            )
-            try:
-                effective_proxy, relay = open_plan_check_proxy(
-                    route, selected_proxy, timeout=timeout,
+            used_proxies: set[str] = set()
+            attempt = 0
+            if len(drivers) > 1:
+                _append_log(
+                    email,
+                    f"[查活] 第 {layer}/{len(drivers)} 层途径：{layer_driver}",
                 )
-                with bind_callbacks(lambda: _manual_wait(account_id, email),
-                                    lambda: _manual_checkpoint(account_id),
-                                    lambda page: _pump_manual_browser(account_id, page)):
-                    result = dict(check_account_liveness(
-                        email,
-                        proxy=effective_proxy,
-                        clear_log=False,
-                        email_source=email_source,
-                        fingerprint_state={"force_fresh": attempt > 1},
-                    ))
-            except task_control.TaskCancelled:
-                raise
-            except Exception as exc:
-                dead_code = (
-                    getattr(exc, "error_code", "") if isinstance(exc, AccountUnusableError)
-                    else detect_account_unusable_text(str(exc))
+            if layer > 1 and candidates:
+                # 换层时重新从代理池选出口：上一层可能已经把出口切成直连兜底，
+                # 而"池非空不直连"的规则在每一层都要成立。
+                route = _live_proxy_route(random.choice(candidates), proxy_cfg)
+                _append_log(
+                    email,
+                    f"[查活] 换层重新选择出口：{_mask_proxy(route.get('proxy')) or 'direct'}",
                 )
-                if isinstance(exc, AccountUnusableError) or dead_code:
-                    result = {
-                        "ok": False, "status": "deactivated", "error": dead_code or "account_deactivated",
-                        "checked_at": datetime.now().isoformat(timespec="seconds"),
-                    }
-                else:
-                    result = _failure_result(exc, datetime.now().isoformat(timespec="seconds"))
-            finally:
-                if relay is not None:
-                    current_relay, relay = relay, None
-                    try:
-                        current_relay.close()
-                    except Exception:
-                        logger.warning("[查活] 关闭代理中继失败", exc_info=True)
-            result.update({"attempts": attempt, "max_attempts": max_attempts})
-            if not _retryable_live_check_result(result):
-                break
-            if attempt >= max_attempts:
-                _append_log(email, f"[查活] 自动重试次数已用尽（{attempt}/{max_attempts}）")
-                break
+            while attempt < max_attempts:
+                attempt += 1
+                task_control.checkpoint(KIND, account_id)
+                selected_proxy = str(route.get("proxy") or "").strip()
+                if selected_proxy:
+                    used_proxies.add(selected_proxy)
+                _append_log(
+                    email,
+                    f"[查活] 完整登录尝试 {attempt}/{max_attempts}："
+                    f"{_mask_proxy(selected_proxy) or 'direct'}",
+                )
+                try:
+                    effective_proxy, relay = open_plan_check_proxy(
+                        route, selected_proxy, timeout=timeout,
+                    )
+                    with bind_callbacks(lambda: _manual_wait(account_id, email),
+                                        lambda: _manual_checkpoint(account_id),
+                                        lambda page: _pump_manual_browser(account_id, page)):
+                        result = dict(check_account_liveness(
+                            email,
+                            proxy=effective_proxy,
+                            clear_log=False,
+                            email_source=email_source,
+                            fingerprint_state={"force_fresh": attempt > 1},
+                            driver=layer_driver,
+                        ))
+                except task_control.TaskCancelled:
+                    raise
+                except Exception as exc:
+                    dead_code = (
+                        getattr(exc, "error_code", "") if isinstance(exc, AccountUnusableError)
+                        else detect_account_unusable_text(str(exc))
+                    )
+                    if isinstance(exc, AccountUnusableError) or dead_code:
+                        result = {
+                            "ok": False, "status": "deactivated", "error": dead_code or "account_deactivated",
+                            "checked_at": datetime.now().isoformat(timespec="seconds"),
+                        }
+                    else:
+                        result = _failure_result(exc, datetime.now().isoformat(timespec="seconds"))
+                finally:
+                    if relay is not None:
+                        current_relay, relay = relay, None
+                        try:
+                            current_relay.close()
+                        except Exception:
+                            logger.warning("[查活] 关闭代理中继失败", exc_info=True)
+                result.update({
+                    "attempts": attempt,
+                    "max_attempts": max_attempts,
+                    "driver": layer_driver,
+                    "driver_layer": layer,
+                    "driver_chain": list(drivers),
+                })
+                if not _retryable_live_check_result(result):
+                    break
+                if attempt >= max_attempts:
+                    _append_log(email, f"[查活] 自动重试次数已用尽（{attempt}/{max_attempts}）")
+                    break
 
-            remaining = [item for item in candidates if item not in used_proxies]
-            if remaining:
-                next_proxy = random.choice(remaining)
-                route = _live_proxy_route(next_proxy, proxy_cfg)
-                retry_action = f"切换代理 {_mask_proxy(next_proxy)}"
-            elif candidates:
-                retry_action = "当前代理池已无未用出口，使用新会话重试当前代理"
-            elif selected_proxy:
-                # 未配置代理池时保留原有直连兜底；之后可继续在直连出口有限重试。
-                route = resolve_plan_check_route(explicit_proxy="")
-                retry_action = "使用新会话直连兜底"
-            else:
-                retry_action = "使用新会话重试直连"
-            delay = min(60.0, retry_delay * (2 ** (attempt - 1)))
+                remaining = [item for item in candidates if item not in used_proxies]
+                if remaining:
+                    next_proxy = random.choice(remaining)
+                    route = _live_proxy_route(next_proxy, proxy_cfg)
+                    retry_action = f"切换代理 {_mask_proxy(next_proxy)}"
+                elif candidates:
+                    retry_action = "当前代理池已无未用出口，使用新会话重试当前代理"
+                elif selected_proxy:
+                    # 未配置代理池时保留原有直连兜底；之后可继续在直连出口有限重试。
+                    route = resolve_plan_check_route(explicit_proxy="")
+                    retry_action = "使用新会话直连兜底"
+                else:
+                    retry_action = "使用新会话重试直连"
+                delay = min(60.0, retry_delay * (2 ** (attempt - 1)))
+                _append_log(
+                    email,
+                    f"[查活] 第 {attempt} 次失败：{str(result.get('error') or '临时认证失败')[:300]}；"
+                    f"{delay:g}s 后进行第 {attempt + 1}/{max_attempts} 次尝试，{retry_action}",
+                )
+                if delay > 0:
+                    task_control.sleep(KIND, account_id, delay)
+
+            if result.get("ok") or result.get("status") == "deactivated":
+                break
+            if layer >= len(drivers):
+                break
             _append_log(
                 email,
-                f"[查活] 第 {attempt} 次失败：{str(result.get('error') or '临时认证失败')[:300]}；"
-                f"{delay:g}s 后进行第 {attempt + 1}/{max_attempts} 次尝试，{retry_action}",
+                f"[查活] 第 {layer}/{len(drivers)} 层途径 {layer_driver} 未查活成功，"
+                f"切换第 {layer + 1} 层途径 {drivers[layer]}",
             )
-            if delay > 0:
-                task_control.sleep(KIND, account_id, delay)
         result.update({
+            "driver": result.get("driver") or drivers[layer_used - 1],
+            "driver_layer": result.get("driver_layer") or layer_used,
+            "driver_chain": list(drivers),
             "network_route": route.get("network_route"),
             "proxy_used": _mask_proxy(selected_proxy) or None,
             "upstream_proxy_used": route.get("upstream_proxy_used"),

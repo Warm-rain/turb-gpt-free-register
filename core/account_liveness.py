@@ -997,9 +997,13 @@ def check_account_liveness(
     clear_log: bool = True,
     email_source: str | None = None,
     fingerprint_state: dict | None = None,
+    driver: str | None = None,
 ) -> dict:
     """
     重新登录账号并刷新最新 accessToken。
+
+    driver: 本次使用的查活途径（protocol / cloak）；不传时读取
+    LIVE_CHECK_DRIVER 配置。途径链回退由 live_check_service 按层调用本函数。
 
     返回：
       {
@@ -1042,7 +1046,11 @@ def check_account_liveness(
         logger.info("[查活] 日志文件：%s", path)
         logger.info("[查活] 开始重新登录：%s", email)
         from config import live_check as live_cfg
-        driver_mode = str(live_cfg.LIVE_CHECK_DRIVER or "protocol").strip().lower()
+        if driver is None:
+            driver_mode = str(live_cfg.LIVE_CHECK_DRIVER or "protocol").strip().lower()
+        else:
+            from core import driver_chain
+            driver_mode = driver_chain.normalize_driver(driver) or str(driver).strip().lower()
         logger.info("[查活] 查活驱动：%s", driver_mode)
         if driver_mode == "cloak":
             from core.cloakbrowser_liveness import login_with_cloak

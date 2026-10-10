@@ -128,6 +128,22 @@ test('操作弹窗接收全量 ID 并按操作上限分批提交', () => {
   assert.match(modal, /ZIP 下载单次最多 1000 个账号/);
 });
 
+test('换绑邮箱弹窗提供常用后缀，点击即填入且随来源禁用', () => {
+  // 用户可点选的常用后缀列表，覆盖请求的四个域名。
+  assert.match(
+    modal,
+    /const EMAIL_SUFFIX_PRESETS = \["icloud\.com", "outook\.com", "dr\.com", "duck\.com"\]/,
+  );
+  assert.match(modal, /v-for="preset in EMAIL_SUFFIX_PRESETS"/);
+  assert.match(modal, /@click="pickEmailSuffix\(preset\)"/);
+  // 手动输入也可用：只改写输入框的值，不改变提交参数。
+  assert.match(modal, /function pickEmailSuffix\(suffix: string\) \{\s*if \(!supportsEmailSuffix\.value\) return;\s*emailSuffix\.value = suffix;/);
+  // gptmail / mailnest 不支持后缀时，输入框与预设按钮一起禁用。
+  assert.match(modal, /:disabled="!supportsEmailSuffix"/);
+  assert.match(modal, /:aria-pressed="isEmailSuffixActive\(preset\)"/);
+  assert.match(modal, /email_suffix = supportsEmailSuffix\.value \? emailSuffix\.value\.trim\(\) : ""/);
+});
+
 test('账号页把全量 ID 传给操作弹窗', () => {
   assert.match(page, /:account-ids="operationSeed\?\.ids \|\| \[\]"/);
   assert.match(page, /:account-count="operationSeed\?\.count \|\| 0"/);

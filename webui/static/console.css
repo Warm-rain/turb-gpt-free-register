@@ -1787,6 +1787,26 @@
       border: 1px solid #dcdfe6; border-radius: 8px; background: #fff;
       color: #606266; font: inherit; font-size: 13px; box-sizing: border-box;
     }
+    .email-suffix-presets {
+      display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+      margin-top: -2px;
+    }
+    .email-suffix-presets-label {
+      color: #909399; font-size: 12px; line-height: 30px;
+    }
+    .email-suffix-preset {
+      min-height: 30px; padding: 4px 10px;
+      border: 1px solid #dcdfe6; border-radius: 6px;
+      background: #fff; color: #606266; font: inherit; font-size: 12px;
+      line-height: 1.2; cursor: pointer;
+    }
+    .email-suffix-preset:hover:not(:disabled),
+    .email-suffix-preset.is-active {
+      border-color: #377DFF; background: #ecf5ff; color: #377DFF;
+    }
+    .email-suffix-preset:disabled {
+      opacity: .55; cursor: not-allowed;
+    }
     .outlook-import-result:empty { display: none; }
     .outlook-import-foot {
       display: flex; justify-content: flex-end; gap: 10px;
@@ -1930,6 +1950,34 @@
     .config-ep-select-item.is-active { background: #f0f2f5; color: #303133; font-weight: 500; }
     .config-select-v2-field .config-ep-select { margin-top: 6px; }
     .config-select-v2-field .config-ep-select-btn { font-weight: 500; color: #606266; }
+    /* 多途径优先级链：按顺序列出每一层，可上移 / 下移 / 移除 / 追加 */
+    .config-chain { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+    .config-chain-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+    .config-chain-item {
+      display: flex; align-items: center; gap: 10px;
+      padding: 7px 10px; border: 1px solid #ebeef5; border-radius: 6px; background: #fafbfc;
+    }
+    .config-chain-order {
+      flex: none; width: 20px; height: 20px; border-radius: 50%;
+      background: #eef4ff; color: #377DFF; font-size: 11px; line-height: 20px; text-align: center;
+    }
+    .config-chain-name { font-size: 13px; color: #303133; }
+    .config-chain-id { font-size: 11px; color: #b6bdc7; }
+    .config-chain-actions { margin-left: auto; display: inline-flex; gap: 4px; }
+    .config-chain-btn {
+      min-width: 26px; height: 26px; margin: 0; padding: 0 6px;
+      border: 1px solid #dcdfe6; border-radius: 4px; background: #fff;
+      color: #606266; font: inherit; font-size: 12px; line-height: 1; cursor: pointer;
+    }
+    .config-chain-btn:hover:not(:disabled) { border-color: #377DFF; color: #377DFF; }
+    .config-chain-btn:disabled { opacity: .45; cursor: not-allowed; }
+    .config-chain-empty {
+      padding: 9px 10px; border: 1px dashed #dcdfe6; border-radius: 6px;
+      font-size: 12px; color: #909399;
+    }
+    .config-chain-add { display: flex; gap: 8px; align-items: center; }
+    .config-chain-add select { flex: 1; min-width: 0; }
+    .config-chain-hint { margin: 0; font-size: 12px; color: #909399; line-height: 1.5; }
     .config-sections-v2 { display: grid; gap: 16px; }
     .config-section-v2 {
       scroll-margin-top: 20px;

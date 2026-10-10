@@ -47,7 +47,7 @@ EDITABLE_FIELDS = [
     },
     {
         "key": "PUBLIC_UPLOAD_KEY", "file": "codex.py", "type": "str", "group": "WebUI 授权",
-        "label": "公共上传 Key", "help": "公共页面 /upload 的独立上传 Key；保存后生效，留空关闭上传；不授予后台访问权限",
+        "label": "公共上传 Key（旧版单 Key）", "help": "兼容用：配置后作为一个隐式上传 Key 生效，留空关闭；多个 Key 请在系统配置页的「上传 Key 分配」里新增/删除，不授予后台访问权限",
         "storage": "env", "secret": True,
     },
     # ---- SMTP 通知 ----
@@ -108,7 +108,15 @@ EDITABLE_FIELDS = [
     },
     {
         "key": "REGISTRATION_DRIVER", "file": "roxybrowser.py", "type": "str", "group": "注册方式",
-        "label": "注册驱动", "help": "默认推荐 roxy；protocol=纯协议，容易封号不建议；roxy=RoxyBrowser；cloak=CloakBrowser；browser_use=Browser Use Cloud+Playwright；skyvern=Skyvern Browser Sessions+Playwright",
+        "label": "注册驱动", "help": "默认推荐 roxy；protocol=纯协议，容易封号不建议；roxy=RoxyBrowser；cloak=CloakBrowser；browser_use=Browser Use Cloud+Playwright；skyvern=Skyvern Browser Sessions+Playwright。可排多个途径做优先级链：第一层整体失败（没产出账号）才换第二层，任一层成功即结束",
+        "chain": True,
+        "choices": [
+            {"value": "protocol", "label": "纯协议"},
+            {"value": "roxy", "label": "RoxyBrowser"},
+            {"value": "cloak", "label": "CloakBrowser"},
+            {"value": "browser_use", "label": "Browser Use"},
+            {"value": "skyvern", "label": "Skyvern"},
+        ],
     },
     {
         "key": "AUTO_PLAN_CHECK_AFTER_REGISTER", "file": "register.py", "type": "bool", "group": "注册方式",
@@ -126,7 +134,8 @@ EDITABLE_FIELDS = [
     # ---- 账号查活 ----
     {
         "key": "LIVE_CHECK_DRIVER", "file": "live_check.py", "type": "str", "group": "账号查活",
-        "label": "查活驱动", "help": "默认 protocol=纯协议；cloak=CloakBrowser 浏览器。独立配置，不自动跟随注册或 Codex。Cloak 复用无头、humanize、GeoIP 等设置，每次使用临时独立上下文并在结束时关闭；代理服从现有查活网络路由",
+        "label": "查活驱动", "help": "默认 protocol=纯协议；cloak=CloakBrowser 浏览器。独立配置，不自动跟随注册或 Codex。可排多个途径做优先级链：第一层整体失败（没查活成功也没判定废号）才换第二层，每层各自跑满尝试次数。Cloak 复用无头、humanize、GeoIP 等设置，每次使用临时独立上下文并在结束时关闭；代理服从现有查活网络路由",
+        "chain": True,
         "choices": [
             {"value": "protocol", "label": "纯协议（默认）"},
             {"value": "cloak", "label": "CloakBrowser"},
@@ -393,7 +402,16 @@ EDITABLE_FIELDS = [
     },
     {
         "key": "CODEX_OAUTH_DRIVER", "file": "codex.py", "type": "str", "group": "Codex",
-        "label": "Codex授权驱动", "help": "默认推荐 roxy；protocol=原协议授权；roxy=用 RoxyBrowser；cloak=用 CloakBrowser；browser_use=用 Browser Use Cloud；skyvern=用 Skyvern；same_as_registration=跟随注册驱动",
+        "label": "Codex授权驱动", "help": "默认推荐 roxy；protocol=原协议授权；roxy=用 RoxyBrowser；cloak=用 CloakBrowser；browser_use=用 Browser Use Cloud；skyvern=用 Skyvern；same_as_registration=跟随注册驱动（含注册的优先级链）。可排多个途径做优先级链：第一层整体失败（没拿到授权凭据）才换第二层",
+        "chain": True,
+        "choices": [
+            {"value": "protocol", "label": "纯协议"},
+            {"value": "roxy", "label": "RoxyBrowser"},
+            {"value": "cloak", "label": "CloakBrowser"},
+            {"value": "browser_use", "label": "Browser Use"},
+            {"value": "skyvern", "label": "Skyvern"},
+            {"value": "same_as_registration", "label": "跟随注册途径"},
+        ],
     },
     {
         "key": "ROXY_CODEX_CALLBACK_TIMEOUT", "file": "roxybrowser.py", "type": "int", "group": "RoxyBrowser",
@@ -1385,6 +1403,38 @@ def _validate_smtp_updates(updates: dict, current_values: dict) -> None:
         raise ValueError("SMTP_SECURITY 的值无效，可选：plain, ssl, starttls")
 
 
+def _driver_chain_spec(key: str):
+    """途径链字段 -> (允许的规范化途径, 空配置时的默认途径)。"""
+    from core import driver_chain as chains
+    if key == "REGISTRATION_DRIVER":
+        return chains.REGISTRATION_DRIVERS, "protocol"
+    if key == "LIVE_CHECK_DRIVER":
+        return chains.LIVE_CHECK_DRIVERS, "protocol"
+    if key == "CODEX_OAUTH_DRIVER":
+        return chains.CODEX_OAUTH_DRIVERS, "roxy"
+    return None
+
+
+def _normalize_driver_chain(key: str, value) -> str:
+    """校验并规范化途径链：逐段校验，别名归一，写回逗号分隔的规范写法。
+
+    保存 "roxybrowser, cloak" 会写成 "roxy, cloak"，运行时的解析逻辑完全一致。
+    """
+    from core import driver_chain as chains
+    spec = _driver_chain_spec(key)
+    if spec is None:
+        return str(value or "").strip()
+    allowed, default = spec
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        chain = chains.parse_driver_chain(raw, key=key, allowed=allowed, default=default)
+    except chains.DriverChainError as exc:
+        raise ValueError(str(exc)) from exc
+    return chains.format_chain_value(chain)
+
+
 def update_config(updates: dict) -> dict:
     """批量更新配置。所有 WebUI 可编辑项只写项目根 `.env`。"""
     from config.env_loader import write_env_values, load_env
@@ -1403,11 +1453,15 @@ def update_config(updates: dict) -> dict:
         if field is None:
             ignored.append(key)
             continue
-        choices = field.get("choices") or []
-        if choices:
-            allowed = {str(item.get("value")) for item in choices}
-            if str(value) not in allowed:
-                raise ValueError(f"{key} 的值无效，可选：{', '.join(sorted(allowed))}")
+        if field.get("chain"):
+            # 途径链允许写多层，逐段校验后写回规范化取值。
+            value = _normalize_driver_chain(key, value)
+        else:
+            choices = field.get("choices") or []
+            if choices:
+                allowed = {str(item.get("value")) for item in choices}
+                if str(value) not in allowed:
+                    raise ValueError(f"{key} 的值无效，可选：{', '.join(sorted(allowed))}")
         env_updates[key] = _format_env_value(
             value,
             field["type"],

@@ -205,6 +205,17 @@ class CloakElement:
         # 必须重新声明，避免前一次 Shift/Control 泄漏到普通邮箱文本。
         pending_modifier = None
 
+    @property
+    def text(self) -> str:
+        """返回元素可见文本，兼容 Selenium ``WebElement.text``。"""
+        try:
+            value = self._eval(
+                "el => (el.innerText || el.textContent || el.value || '').trim()"
+            )
+            return str(value or "")
+        except Exception:
+            return ""
+
     def get_attribute(self, name: str) -> str | None:
         try:
             if self.locator is not None:

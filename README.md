@@ -36,6 +36,7 @@ IPWO 住宅代理提供覆盖195+国家和地区的住宅 IP 资源，支持多�
   - `REGISTRATION_DRIVER = "cloak"`
   - `REGISTRATION_DRIVER = "browser_use"`
   - `REGISTRATION_DRIVER = "skyvern"`
+- 注册 / 查活 / Codex 授权都支持**多途径优先级链**：`REGISTRATION_DRIVER = "roxy, cloak, protocol"`，第一层整体失败才换第二层；WebUI 提供可视化排序编辑器，详见「[配置注册驱动](#2-配置注册驱动)」。
 - 支持 RoxyBrowser 一号一环境：自动创建、打开、关闭、删除 Roxy Profile。
 - 支持 Roxy 无头启动：`ROXY_OPEN_HEADLESS=True`。
 - 支持 CloakBrowser：免费 binary、无头模式、humanize、固定 fingerprint seed、按出口 IP 自动匹配语言/时区/WebRTC。
@@ -77,6 +78,7 @@ EMAIL_SOURCE = "outlook,generic_api,imap"
   - `CODEX_OAUTH_DRIVER = "cloak"`
   - `CODEX_OAUTH_DRIVER = "browser_use"`
   - `CODEX_OAUTH_DRIVER = "same_as_registration"`
+- 同样支持多途径优先级链：`CODEX_OAUTH_DRIVER = "roxy, protocol"`，第一层没拿到授权凭据才换第二层。
 - 支持 CPA 管理接口生成授权 URL，并提交 OAuth callback。
 - 支持接码平台：
   - GrizzlySMS
@@ -91,7 +93,7 @@ EMAIL_SOURCE = "outlook,generic_api,imap"
 - 任务中心统一展示注册、Codex 补跑、开通 Plus、查活、查套餐、查额度、提链、支付、2FA、邮箱换绑和 Agent Token 生成的进度与历史；同一账号多次执行分别留档。可按任务类型、状态和邮箱/任务 ID 关键词筛选进行中与历史任务，统计数字随筛选同步收窄。账号操作提供本次执行的阶段日志，暂停/恢复/取消按钮按任务实际能力显示，「取消排队注册」仅作用于注册队列。
 - 动态调整注册线程数，提交后新任务立即使用最新值。
 - 批量补跑 Codex，补跑线程数每次提交即时生效。
-- 管理账号、邮箱池、Codex 凭证；账号页支持单个/批量换绑邮箱并指定新邮箱来源，换绑后同时展示原邮箱与当前邮箱，支持查看换绑日志，并自动查活刷新 AT。账号列表默认隐藏已被兑换码领取的账号，点「显示已兑换」/「显示已兑换账号」可一起查看，旧版列表会加「已兑换」标记。账号列表还支持按 AT 是否过期和查活结果筛选：`at_status=expired` 会同时看套餐查询写回的 `token_expired`、已到点的 `token_expires_at` 和 `access_token` 里的 JWT `exp`，`live_status=failed` 只匹配查活失败（不含已废号/已取消），过期账号在列表状态列显示「AT · 已过期」。三个控制台的账号列表都支持两种全选：「选择全部筛选结果」按当前筛选条件选中全部命中账号，「全选所有账号」忽略筛选并包含已兑换与已归档账号；两者都只分页读取账号 ID，选择数量不受 5000 个上限限制。批量操作在选中数量超过后端单次上限（查活等 500 / ZIP 下载 1000 / 备注等 5000）时由前端自动分批提交并汇总结果，中途失败会提示已提交的批次数。
+- 管理账号、邮箱池、Codex 凭证；账号页支持单个/批量换绑邮箱并指定新邮箱来源，换绑后同时展示原邮箱与当前邮箱，支持查看换绑日志，并自动查活刷新 AT。账号列表默认隐藏已被兑换码领取的账号，点「显示已兑换」/「显示已兑换账号」可一起查看，旧版列表会加「已兑换」标记。账号列表还支持按 AT 是否过期和查活结果筛选：`at_status=expired` 会同时看套餐查询写回的 `token_expired`、已到点的 `token_expires_at` 和 `access_token` 里的 JWT `exp`，`live_status=failed` 只匹配查活失败（不含已废号/已取消），过期账号在列表状态列显示「AT · 已过期」。到期时间无需手动查询：后端按套餐查询写回的 `token_expires_at`、缺失时回退解析 `access_token` 的 JWT `exp` 自动推算 `at_expires_at`，列表 AT 行显示「有效至 2026-07-17 17:38:38」或「已过期 · …」，轻量轮询也会带上同一时间，三个控制台都一致。三个控制台的账号列表都支持三种一键选择：「选择全部筛选结果」按当前筛选条件选中全部命中账号，「全选所有账号」忽略筛选并包含已兑换与已归档账号，「选中过期账号」先把 AT 状态筛成已过期再按同一筛选全选（按钮带过期数量，便于批量查活刷新）；三者都只分页读取账号 ID，选择数量不受 5000 个上限限制。批量操作在选中数量超过后端单次上限（查活等 500 / ZIP 下载 1000 / 备注等 5000）时由前端自动分批提交并汇总结果，中途失败会提示已提交的批次数。
 - 账号列表的「注册开始日期/注册结束日期」按注册流程确认拿到有效登录会话的 `registered_at` 筛选；`created_at` 仍保留为本地首次落库时间。旧账号无法恢复远端真实注册时间，首次迁移时以 `created_at` 回填。
 - 账号页新增「额度 / 用量」与「银行重置」两列：「额度 / 用量」把余额和限流窗口合并在一列——第一行是 `GET /backend-api/accounts/{account_id}/remaining_balance` 的余额原值与币种（`unlimited` 时显示「不限量」；`wham/usage` 的 `credits.has_credits=false` 时显示「无额度权益」，与「已用完」区分开），下面两条进度条是 `GET /backend-api/wham/usage` 的 5 小时窗口与周（团队套餐为月，进度条标签会写「月」）窗口**已用**百分比，条上同时给出「X 小时后重置」倒计时；100% 显示「已用尽」标红，≥80% 标黄，没查过显示「无数据」且进度条留空。「银行重置」来自 `GET /backend-api/wham/rate-limit-reset-credits`，显示可用重置券张数和最近一张的到期时间，`applicable_available_count` 与可用张数不同时提示「可应用 N 张」。三个接口都只读、不消耗额度，与「查套餐」共用同一条已登录会话（点「查套餐」会顺带刷新这两列），也可以在账号页工具栏、行内按钮或账号详情里单独执行「查额度」。任一接口失败只影响自己那一部分并保留上次成功的数值，失败原因、每张券的到期时间和限流状态在悬停提示里给出；独立查询使用 `QUOTA_CHECK_WORKERS` / `QUOTA_CHECK_QUEUE_LIMIT` / `QUOTA_CHECK_MIN_INTERVAL` / `QUOTA_CHECK_JITTER`，网络策略复用 `PLAN_CHECK_PROXY_*`。
 - 账号查活通过独立的 `LIVE_CHECK_DRIVER` 选择 `protocol`（默认）或 `cloak`，不自动跟随注册或 Codex 授权驱动；启用方式见下方「配置查活驱动」。协议驱动参考协议登录样本，按“首页 → 设备 Cookie → 登录页 → CSRF → Signin(login)”建立登录上下文，优先使用已保存的密码，并按服务端实际要求完成邮箱 OTP / MFA；支持 TOTP Base32 密钥和 `otpauth://totp/` URI，动态码临近过期时等待下一窗口，明确无效时最多重试一次。兼容 MFA 页面别名、Location 重定向及相对回调地址；回调成功后空 Session 最多轮询 8 次，每次间隔 0.35 秒，不重复消费 OAuth code。没有密码和 2FA 的旧记录仍可使用已有 AT 的邮箱重认证链。查活自动重试可在配置页「账号查活」或 `.env` 中独立设置：`LIVE_CHECK_MAX_ATTEMPTS=3` 表示含首次最多尝试 3 次，运行时限定 1–5，设为 1 关闭整链自动重试（仍保留阶段内 CSRF/OTP 重试与 Session 轮询）；`LIVE_CHECK_RETRY_DELAY=2.0` 为基础秒数，运行时限定 0–60，按 1、2、4 倍指数退避，单次延迟最多 60 秒。瞬时网络错误、403/408/429/5xx 或 Session 尚未就绪时会有限重登，优先未用代理；单代理或代理耗尽时使用独立会话重试原出口，代理池非空不回退直连。密码/密钥等明确凭据错误和明确废号不重复整链登录，验证码阶段仍保留有限重取新码。只有完成 Web 登录并取得新 AT 才标记正常；密码错误、验证码错误、限流或网络阻断记为查活失败，明确停用/删除/封禁才标记废号。遇到手机号验证或资料补全会提示先处理。登录状态分流与 TOTP 处理参考 [reauth-web](https://github.com/boji1334/reauth-web)，保留本项目的 ChatGPT Web Session/AT 用途。浏览器（Cloak）查活按可用内存自动限制同时存活的浏览器数量、追加 V8 堆上限、默认开启省流量拦截并缓存出口地理信息，登录状态机也改为单次页面内批量判定，内存峰值和单次耗时都明显下降，详见下方「浏览器查活的内存与速度优化」。
@@ -427,6 +429,27 @@ REMAIL_SUPPLY_POLICY=public_only
 
 编辑 `config/roxybrowser.py`，或直接在 WebUI「配置」页修改。
 
+`REGISTRATION_DRIVER` 支持**多途径优先级链**：把多个途径按优先级写在同一个配置项里（逗号、分号、空格、`>` 或 `->` 分隔），
+第一层整体失败（没有产出账号）才切到第二层，任一层成功立即结束。单个取值 = 只有一层，旧配置完全兼容。
+WebUI「配置 → 注册方式」提供可视化排序编辑器（添加为下一层 / 上移 / 下移 / 移除）。
+
+```python
+REGISTRATION_DRIVER = "roxy, cloak, protocol"  # 先用 roxy，失败再 cloak，最后纯协议
+```
+
+| 配置项 | 可写途径 | 切换条件 |
+| --- | --- | --- |
+| `REGISTRATION_DRIVER` | `protocol` / `roxy` / `cloak` / `browser_use` / `skyvern` | 该层跑完但没有产出账号（`account_id`）；账号已创建、任务被用户停止都不换层 |
+| `LIVE_CHECK_DRIVER` | `protocol` / `cloak` | 该层跑满 `LIVE_CHECK_MAX_ATTEMPTS` 次仍未查活成功、也没判定废号 |
+| `CODEX_OAUTH_DRIVER` | `protocol` / `roxy` / `cloak` / `browser_use` / `skyvern` / `same_as_registration` | 该层没拿到授权凭据（`status=failed`）；`skipped`、账号已废、用户停止都不换层 |
+
+说明：
+
+- 查活每一层各自跑满 `LIVE_CHECK_MAX_ATTEMPTS` 次完整登录尝试，换层时重新从代理池挑选出口。
+- `CODEX_OAUTH_DRIVER` 里的 `same_as_registration` 会展开成 `REGISTRATION_DRIVER` 的整条链。
+- 别名同样可用（`roxybrowser` / `fingerprint` / `cloakbrowser` / `api` / `sv` / `bu` …），通过 WebUI 保存时会归一成规范写法。
+- 任务日志会打印 `[注册途径] 优先级链：roxy → cloak → protocol`、`[查活] 第 1/2 层途径：cloak`、`[Codex][途径] 第 2/2 层：protocol`，便于回溯最终生效的是哪一层。
+
 #### 使用 RoxyBrowser 注册
 
 ```python
@@ -610,12 +633,14 @@ CPA_MANAGEMENT_KEY = "你的CPA管理密钥"
 ```dotenv
 # 默认使用协议查活；切换到 CloakBrowser 时显式设为 cloak
 LIVE_CHECK_DRIVER=cloak
+# 多途径优先级链：先用 CloakBrowser，整层失败后再用纯协议
+LIVE_CHECK_DRIVER="cloak, protocol"
 CLOAK_HEADLESS=True
 CLOAK_HUMANIZE=True
 CLOAK_GEOIP=True
 ```
 
-`LIVE_CHECK_DRIVER` 的源码默认值位于 `config/live_check.py`，为 `protocol`。只支持 `protocol` / `cloak`，不支持 `same_as_registration` 等自动跟随模式；修改 `REGISTRATION_DRIVER` 或 `CODEX_OAUTH_DRIVER` 不会改变查活驱动。配置遵循现有 `.env` / 环境变量覆盖规范，并纳入 `config.reload_all()`；通过 WebUI 保存后热加载，后续启动的查活读取新配置。
+`LIVE_CHECK_DRIVER` 的源码默认值位于 `config/live_check.py`，为 `protocol`。只支持 `protocol` / `cloak`，不支持 `same_as_registration` 等自动跟随模式；修改 `REGISTRATION_DRIVER` 或 `CODEX_OAUTH_DRIVER` 不会改变查活驱动。可以按优先级写多层（见「[配置注册驱动](#2-配置注册驱动)」的优先级链说明）：每层各自跑满 `LIVE_CHECK_MAX_ATTEMPTS` 次完整登录尝试，整层既没查活成功也没判定废号才换下一层，换层时重新从代理池挑选出口，最终生效的层会写进日志并记录在查活结果的 `driver` / `driver_layer` / `driver_chain` 字段。配置遵循现有 `.env` / 环境变量覆盖规范，并纳入 `config.reload_all()`；通过 WebUI 保存后热加载，后续启动的查活读取新配置。
 
 启用 Cloak 前，在运行项目的 Python 环境中安装依赖：
 
@@ -824,9 +849,10 @@ REGISTER_PASSWORD = "你的固定密码"
 
 | 文件 | 说明 |
 |---|---|
-| `config/roxybrowser.py` | 注册驱动、Roxy API、Roxy 环境生命周期 |
+| `config/roxybrowser.py` | 注册驱动（支持优先级链）、Roxy API、Roxy 环境生命周期 |
+| `config/live_check.py` | 查活驱动（支持优先级链）、查活并发/省流量/人工验证 |
 | `config/cloakbrowser.py` | CloakBrowser 无头/humanize/geoip/语言时区/指纹 seed |
-| `config/codex.py` | Codex OAuth、授权驱动、CPA 管理接口、接码平台 |
+| `config/codex.py` | Codex OAuth、授权驱动（支持优先级链）、CPA 管理接口、接码平台 |
 | `config/email.py` | 邮箱来源、OTP 轮询、QQ IMAP、域名邮箱、Cloudflare Worker 临时邮箱 |
 | `config/proxy.py` | 代理池 |
 | `config/register.py` | 默认邮箱、密码、显示名 |
@@ -986,6 +1012,7 @@ ENABLE_CODEX_AUTO = False
 ├── core/
 │   ├── browser_data_saver.py       # Roxy/Cloak 本地浏览器省流量资源拦截
 │   ├── browser_traffic.py          # 浏览器注册 HTTP/WebSocket 流量统计
+│   ├── driver_chain.py             # 注册/查活/Codex 授权的多途径优先级链
 │   ├── roxy_registration.py        # Roxy / 浏览器注册页面流程
 │   ├── cloakbrowser_registration.py # Cloak 注册入口
 │   ├── cloakbrowser_driver.py      # Cloak Playwright→Selenium 风格适配层

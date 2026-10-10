@@ -10,12 +10,15 @@ RoxyBrowser 指纹浏览器自动化注册配置。
 from config.env_loader import env_str, apply_env_overrides
 
 
-# 注册驱动：
+# 注册驱动（支持多途径优先级链）：
 #   "protocol"     = 原有 curl_cffi 纯协议注册（容易封号，不建议）
 #   "roxy"         = 调用 RoxyBrowser 指纹浏览器 + Selenium 自动化注册
 #   "cloak"        = 调用 CloakBrowser + Playwright/Selenium 适配层注册
 #   "browser_use"  = Browser Use Cloud stealth Chromium + Playwright
 #   "skyvern"      = Skyvern Browser Sessions + Playwright
+# 可以按优先级写多途径，用逗号 / 分号 / 空格 / 箭头分隔：
+#   "roxy, cloak, protocol" 表示先用 roxy，整层失败（没产出账号）再换 cloak，最后纯协议。
+# 单个取值 = 只有一层，与旧配置完全兼容。
 REGISTRATION_DRIVER: str = "roxy"
 
 # RoxyBrowser 本地 API

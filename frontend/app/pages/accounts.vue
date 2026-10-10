@@ -15,6 +15,7 @@ import {
   accountResult,
   accountResultDetails,
   accountStatus,
+  accountTokenInfo,
   chunkAccountIds,
   copyAccountText,
   mergeAccountResults,
@@ -36,6 +37,8 @@ const groups = ref<AccountGroup[]>([]);
 const selectedIds = ref(new Set<number>());
 const selectedRows = ref(new Map<number, Account>());
 const allAccountsTotal = ref(0);
+// 当前筛选口径下的 AT 已过期账号数，供「选中过期账号」按钮显示数量。
+const expiredTotal = ref(0);
 const selectBusy = ref("");
 const selectProgress = ref("");
 const filters = reactive({
@@ -237,8 +240,35 @@ async function loadAllAccountsTotal() {
     // 总数只用于按钮提示，失败不影响账号列表使用。
   }
 }
+/**
+ * 统计当前筛选口径下的过期账号数，供「选中过期账号（N）」显示。
+ *
+ * 这里显式覆盖 at_status=expired：即使当前 AT 筛选是「未过期」，按钮也要反映
+ * 真正可一键选中的过期账号数量；其余筛选（归档/兑换/套餐…）保持一致。
+ */
+async function loadExpiredTotal() {
+  try {
+    const result = await request("/api/accounts/ids", {
+      query: {
+        ...applied.value,
+        at_status: "expired",
+        scope: "filtered",
+        page: 1,
+        page_size: 1,
+      },
+    });
+    if (mounted) expiredTotal.value = Number(result.total || 0);
+  } catch {
+    // 数量只用于按钮提示，失败时按钮仍然可用。
+  }
+}
 async function refresh() {
-  await Promise.all([loadAccounts(), loadGroups(), loadAllAccountsTotal()]);
+  await Promise.all([
+    loadAccounts(),
+    loadGroups(),
+    loadAllAccountsTotal(),
+    loadExpiredTotal(),
+  ]);
 }
 function clearSelection() {
   selectedIds.value = new Set();
@@ -289,6 +319,10 @@ function toggleRedeemed() {
 watch([page, pageSize, applied], () => {
   if (initialized) void loadAccounts();
 });
+// 筛选变化后同步过期账号数；翻页不重算，避免每次分页都多打一次轻量统计请求。
+watch(applied, () => {
+  if (initialized) void loadExpiredTotal();
+});
 function resizePage() {
   page.value = 1;
 }
@@ -333,12 +367,17 @@ function togglePage() {
 /**
  * 全选：scope=filtered 按当前筛选收集 ID；scope=all 忽略筛选，包含已兑换与已归档。
  * 只按页收集 ID（每页 5000），再取第一页做行缓存，因此不受账号总数限制。
+ * busyKey 用于区分是哪个按钮在跑（工具栏同时有一键选中过期账号等多个入口）。
  */
-async function selectAllAccounts(scope: "filtered" | "all") {
+async function selectAllAccounts(
+  scope: "filtered" | "all",
+  busyKey: string = scope,
+  successLabel = "",
+) {
   if (selectBusy.value) return;
   const revision = ++selectionRevision;
   const filterSnapshot = scope === "all" ? {} : { ...applied.value };
-  selectBusy.value = scope;
+  selectBusy.value = busyKey;
   selectProgress.value = "正在统计…";
   try {
     const ids = new Set<number>();
@@ -374,7 +413,9 @@ async function selectAllAccounts(scope: "filtered" | "all") {
     toast.success(
       scope === "all"
         ? `已选中账号库全部 ${ids.size} 个账号（含已兑换与已归档）`
-        : `已选中筛选结果中的 ${ids.size} 个账号`,
+        : successLabel
+          ? `已选中${successLabel}（${ids.size} 个）`
+          : `已选中筛选结果中的 ${ids.size} 个账号`,
     );
   } catch (cause) {
     toast.error(accountError(cause));
@@ -382,6 +423,19 @@ async function selectAllAccounts(scope: "filtered" | "all") {
     selectBusy.value = "";
     selectProgress.value = "";
   }
+}
+/**
+ * 一键选中过期账号：先把 AT 筛选切到「已过期」，再按同一筛选全选。
+ *
+ * 这样列表、按钮计数和选中集合口径完全一致，用户能直接看到被选中的是哪些账号，
+ * 也能在批量查活刷新后手动把筛选切回去。日期校验失败时 applyFilters 已提示，这里直接放弃。
+ */
+async function selectExpiredAccounts() {
+  if (selectBusy.value) return;
+  filters.at_status = "expired";
+  applyFilters();
+  if (applied.value.at_status !== "expired") return;
+  await selectAllAccounts("filtered", "expired", "过期账号");
 }
 async function lookup() {
   const emails = [
@@ -812,6 +866,19 @@ async function afterOperation() {
                 ? selectProgress || "选择中…"
                 : `全选所有账号（${allAccountsTotal.toLocaleString()}）`
             }}</button
+          ><button
+            class="btn btn-sm"
+            :disabled="!!selectBusy || loading"
+            title="把 AT 状态筛成「已过期」并一键选中全部过期账号，便于批量查活刷新 AT"
+            @click="selectExpiredAccounts"
+          >
+            {{
+              selectBusy === "expired"
+                ? selectProgress || "选择中…"
+                : `选中过期账号${
+                    expiredTotal ? `（${expiredTotal.toLocaleString()}）` : ""
+                  }`
+            }}</button
           ><button class="btn btn-sm" @click="lookupOpen = true">
             按邮箱选中
           </button>
@@ -1007,12 +1074,20 @@ async function afterOperation() {
                     <span class="status-label">查活</span
                     ><UiBadge :value="row.live_check_status || 'unknown'" />
                   </div>
+                  <div v-if="row.at_expired" :title="accountTokenInfo(row).title">
+                    <span class="status-label">AT</span
+                    ><UiBadge value="expired" /><span
+                      v-if="row.at_expires_at"
+                      class="at-expiry expired"
+                      >{{ accountTokenInfo(row).expiresLabel }}</span
+                    >
+                  </div>
                   <div
-                    v-if="row.at_expired"
-                    title="access_token 已过期或失效，需要重新查活刷新 AT"
+                    v-else-if="row.has_access_token"
+                    :title="accountTokenInfo(row).title"
                   >
                     <span class="status-label">AT</span
-                    ><UiBadge value="expired" />
+                    ><span class="at-expiry">{{ accountTokenInfo(row).label }}</span>
                   </div>
                   <div>
                     <span class="status-label">Codex</span
@@ -1392,6 +1467,14 @@ async function afterOperation() {
   color: var(--text-muted, #64748b);
   font-size: 10px;
   width: 36px;
+}
+.at-expiry {
+  color: var(--text-muted, #64748b);
+  font-size: 10px;
+  white-space: nowrap;
+}
+.at-expiry.expired {
+  color: #b94b4b;
 }
 .row-error {
   color: #b94b4b;

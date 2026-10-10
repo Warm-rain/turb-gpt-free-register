@@ -50,13 +50,15 @@ NUXT_API_PROXY=http://127.0.0.1:8000 npm --prefix frontend run dev
 | `/codex` | 账号授权状态、重试/停止、凭证文件归档与下载 |
 | `/redemptions` | 兑换码、分组公开库存、交付记录 |
 | `/providers` | 「提链供应商」与「支付平台」两个标签页：供应商/CDK 管理，以及四个支付平台的已保存 CDK 与额度查询 |
-| `/settings` | 根据后端字段元数据生成的完整配置表单，分组、搜索、保存与辅助操作 |
+| `/settings` | 根据后端字段元数据生成的完整配置表单，分组、搜索、保存与辅助操作；`chain: true` 的字段（注册 / 查活 / Codex 授权驱动）渲染成可增删排序的「多途径优先级链」编辑器，值仍是逗号分隔字符串，两个旧版控制台同样支持 |
 | `/login` | 授权码登录与持久会话 |
 | `/redeem` | 无需管理员登录的公开兑换、结果恢复及凭据下载 |
 
 历史模板暂保留用于兼容排查，控制台现在支持三个入口：Nuxt 新前端（`/`）、旧版侧边栏（`/?ui=modern`）和历史版顶部导航（`/?ui=legacy`）。登录后每个管理页面的底部或顶部都提供另外两个入口；普通 `/` 始终进入 Nuxt，旧版偏好 Cookie 不会改变默认界面。
 
 ## 账号批量操作
+
+换绑邮箱弹窗在「邮箱后缀」输入框下方提供常用后缀（`icloud.com` / `outook.com` / `dr.com` / `duck.com`）快捷按钮：点一下即填入，仍可手动改写；来源为 GPTMail / MailNest 时按钮与输入框一起禁用，提交参数 `source` / `email_suffix` 不变。旧版控制台弹窗有同一组选项。
 
 `/accounts` 的批量操作按钮与旧版控制台一致，直接平铺在账号列表工具栏下方，按「检查与安全 / 订阅与支付 / Codex 与导出 / 整理账号」四组排在一块，不再使用需要展开的下拉菜单。未选择账号时全部禁用；点击后进入统一的账号操作弹窗，只有删除会二次确认后立即执行。同一套动作在行内「详情 / 操作」中仍可对单个账号使用。
 
@@ -102,19 +104,21 @@ NUXT_API_PROXY=http://127.0.0.1:8000 npm --prefix frontend run dev
 
 高级筛选新增「AT 状态」和「查活状态」两个下拉，账号列表「状态」列在 AT 过期时额外显示「AT · 已过期」徽章（旧版控制台在查活状态下方显示「AT: 已过期」）。
 
+- 到期时间自动推算并展示：列表在 AT 行给出具体时间——未过期显示「AT · 有效至 2026-07-17 17:38:38」，已过期显示「AT · 已过期 · 2026-07-17 17:38:38」，悬停提示说明判定来源。后端在 `_decorate_account` / `_decorate_account_status` 里用 `at_expires_at` 下发同一口径的时间：优先套餐查询写回的 `token_expires_at`，缺失时直接解析 `access_token` 的 JWT `exp`，因此从未查过套餐的新注册/导入账号也有到期时间；`at_state`（expired/valid/unknown）与 `at_status` 筛选共用 `_account_at_state`，看到的徽章和筛出来的集合不会不一致。两个旧版控制台在查活状态下方同样显示「AT 到期: …」。
 - `at_status=expired|valid|unknown`：`expired` 判定顺序与列表徽章完全一致——先看套餐查询写回的 `token_expired`，再看 `token_expires_at` 是否已到点（用 `julianday` 比较，时间流逝会让旧结果自然失效），最后回退到直接解析 `access_token` 的 JWT `exp`（SQLite 自定义函数 `account_at_expired`）。因此从未查过套餐的新账号也能被筛出来，`unknown` 只表示既没有过期标记、也没有可用 AT 的账号。
 - `live_status=failed|success|deactivated|checking|cancelled|never`：按 `live_check_status` 过滤。`failed` 只表示查活失败（密码/验证码错误、限流、网络阻断等），不含 `deactivated`（明确废号）和 `cancelled`（用户取消）；`never` 匹配状态为空的账号。
 - 两个条件都下推到 `COUNT/LIMIT/OFFSET`，分页总数、列表、`/api/accounts/ids`（全选筛选结果）、`/api/accounts/lookup`（按邮箱选中）和 `/api/accounts/plan-check-status`（轻量轮询）使用同一口径，轮询不会把筛选外的账号合并回列表。
-- 无法识别的取值命中空集合而不是放宽成全部账号；只有 `at_expired` 布尔结论会下发到前端，`access_token` 本身仍只在复制或导出时读取。
+- 无法识别的取值命中空集合而不是放宽成全部账号；只下发 `at_expired` 布尔结论、`at_state` 和自动推算的 `at_expires_at` 时间戳，`access_token` 本身仍只在复制或导出时读取。
 - 查活成功换发新 AT 时会同步刷新 `token_expired` / `token_expires_at`，新注册或导入的账号也会在写入时记录过期时间，避免刚刷新过 AT 的账号仍被筛成过期。
 
 ## 全选与自动分批
 
-账号页支持两种「全选」，都只收集账号 ID，不再把整库账号对象塞进浏览器内存（页面用 `selectedIds` 保存选中 ID，`selectedRows` 只缓存确实加载过的行，操作弹窗只预览前 200 行）：
+账号页支持三种「全选」，都只收集账号 ID，不再把整库账号对象塞进浏览器内存（页面用 `selectedIds` 保存选中 ID，`selectedRows` 只缓存确实加载过的行，操作弹窗只预览前 200 行）：
 
 - 「选择全部筛选结果（N）」：按当前筛选条件（归档/套餐/Codex/2FA/分组/兑换/日期/关键词/AT/查活状态）收集全部命中账号，N 取该筛选的总数。旧版控制台按钮同名，沿用 `getAccountLookupFilters()` 的同一份筛选快照并补上列表关键词。
 - 「全选所有账号（M）」：忽略全部筛选，包含已兑换与已归档账号，M 是账号库总数。
-- 两者都按页读取 `GET /api/accounts/ids`（`scope=filtered|all`，`page_size` 最大 5000，只返回 ID 不返回 payload），因此选择数量不受 5000 个上限限制；旧版控制台最多翻 4000 页，避免服务端 `total` 异常时死循环。
+- 「选中过期账号（N）」：一键把 AT 状态切到「已过期」并按同一筛选全选，N 是当前归档/兑换等口径下的过期账号数（`at_status=expired` 单独统计，不受当前 AT 下拉影响）。列表、按钮计数和选中集合口径完全一致，批量查活刷新后可以手动把 AT 筛选切回「全部状态」。三个控制台都有这个入口。
+- 三者都按页读取 `GET /api/accounts/ids`（`scope=filtered|all`，`page_size` 最大 5000，只返回 ID 不返回 payload），因此选择数量不受 5000 个上限限制；旧版控制台最多翻 4000 页，避免服务端 `total` 异常时死循环。
 - 旧版控制台保留「本页全选」复选框的原有语义（只作用于当前页并保留其他页选择）；「按邮箱选中」也不再限制单次 5000 个邮箱，而是按 5000 一批查询后合并。
 
 后端每个批量接口都有单次上限（查活/套餐/2FA/换邮箱/Agent/上传/补跑/停止/提链/开通 Plus/支付为 500，ZIP 下载为 1000，备注/分组/归档/删除/密文读取为 5000）。选中数量超过上限时两个前端都会自动分批提交：

@@ -11,10 +11,9 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from typing import Callable
 
 from config import REGISTER_EMAIL, REGISTER_NAME  # 这两个一般不在 WebUI 改
-# 可热改的，按模块属性方式读
+# 可热改的，按模块属性方式读（注册途径链见 core.driver_chain.registration_drivers）
 from config import twofa as _twofa_cfg
 from config import email as _email_cfg
-from config import roxybrowser as _roxy_cfg
 from config import openai_protocol as _protocol_cfg
 from config import register as _register_cfg
 from core.session import BrowserSession
@@ -170,6 +169,33 @@ def prepare_registration_inputs() -> tuple[str | None, str, str]:
     return email, name, birthday
 
 
+def _registration_stop_requested() -> bool:
+    """WebUI 任务被用户停止时不再切换下一层途径。"""
+    from core import driver_chain
+    return driver_chain.stop_requested()
+
+
+def _registration_cancelled(exc: BaseException) -> bool:
+    """识别任务取消类异常：这类异常必须向上抛，不能当成途径失败继续换层。"""
+    from core import driver_chain
+    return driver_chain.is_cancellation(exc)
+
+
+def _registration_layer_failed(result: object) -> bool:
+    """该层是否"整体失败且未产出结果"，只有这种情况才切换下一层途径。
+
+    已拿到账号（account_id / access_token）说明注册本身成功，即使 Codex 未完成
+    也不换途径重跑，避免重复注册同一个邮箱。
+    """
+    if not isinstance(result, dict):
+        return True
+    if result.get("success"):
+        return False
+    if result.get("account_id") or result.get("access_token"):
+        return False
+    return True
+
+
 def run_registration(
     email: str | None,
     name: str,
@@ -186,20 +212,81 @@ def run_registration(
     → 进入 /create-account/password 并提交密码 → 发送并验证邮箱 OTP
     → about-you 提交昵称生日 → 完成。
 
+    支持多途径优先级链：REGISTRATION_DRIVER 可以写成 "roxy, cloak, protocol"，
+    按顺序尝试，当前层整体失败且没有产出账号时才切到下一层。
+
     Args:
         email: 注册邮箱
         name: 用户显示名称
         birthday: 生日，格式 YYYY-MM-DD
         proxy: 代理地址（不传则从 PROXY_POOL 随机抽）
         otp_code: 邮箱验证码（如果为None，会等待手动输入）
+        batch_dir: 批次归档目录
+        on_email_acquired: 驱动领取到邮箱后的回调
     """
+    from core import driver_chain
+    drivers = driver_chain.registration_drivers()
+    if len(drivers) == 1:
+        return _run_registration_driver(
+            drivers[0], email, name, birthday, proxy, otp_code, batch_dir, on_email_acquired,
+        )
+
+    logger.info(f"[注册途径] 优先级链：{driver_chain.describe_chain(drivers)}")
+    result: dict | None = None
+    for index, driver in enumerate(drivers):
+        layer = index + 1
+        if index == 0:
+            logger.info(f"[注册途径] 第 {layer}/{len(drivers)} 层：{driver}")
+        else:
+            logger.warning(
+                f"[注册途径] 第 {layer}/{len(drivers)} 层：{driver}"
+                f"（上一层未产出账号，换途径重试）"
+            )
+        try:
+            result = _run_registration_driver(
+                driver, email, name, birthday, proxy, otp_code, batch_dir, on_email_acquired,
+            )
+        except Exception as exc:
+            if _registration_cancelled(exc):
+                raise
+            logger.error(f"[注册途径] 第 {layer} 层 {driver} 异常：{type(exc).__name__}: {exc}")
+            logger.debug("[注册途径] 异常详情", exc_info=True)
+            result = {
+                "success": False,
+                "email": email,
+                "error": f"{type(exc).__name__}: {str(exc)[:300]}",
+            }
+        if not isinstance(result, dict):
+            result = {"success": False, "email": email, "error": str(result)[:300]}
+        if not _registration_layer_failed(result) or layer == len(drivers):
+            return result
+        if _registration_stop_requested():
+            return result
+        logger.warning(
+            f"[注册途径] 第 {layer} 层 {driver} 整体失败（未产出账号），"
+            f"准备切换下一层：{str(result.get('error') or '')[:200]}"
+        )
+    return result if result is not None else {"success": False, "email": email, "error": "注册途径链为空"}
+
+
+def _run_registration_driver(
+    driver_mode: str,
+    email: str | None,
+    name: str,
+    birthday: str | None = None,
+    proxy: str = None,
+    otp_code: str = None,
+    batch_dir=None,
+    on_email_acquired: Callable[[str], None] | None = None,
+):
+    """按单个注册途径执行一次完整注册（途径链中的一层）。"""
     # 可选注册驱动：
     #   protocol     = 原有纯协议（curl_cffi）
     #   roxy         = RoxyBrowser 指纹浏览器 + Selenium
     #   cloak        = CloakBrowser + Playwright/Selenium 适配层
     #   browser_use  = Browser Use Cloud stealth Chromium + Playwright
     #   skyvern      = Skyvern Browser Sessions + Playwright
-    driver_mode = str(getattr(_roxy_cfg, "REGISTRATION_DRIVER", "protocol") or "protocol").strip().lower()
+    driver_mode = str(driver_mode or "protocol").strip().lower()
     if driver_mode in ("roxy", "roxybrowser", "fingerprint", "browser"):
         from core.roxy_registration import run_roxy_registration
         return run_roxy_registration(

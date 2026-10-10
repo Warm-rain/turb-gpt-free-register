@@ -13,6 +13,88 @@ const error = ref("");
 const result = ref<any>(null);
 const lines = computed(() => text.value.split(/\r?\n/).filter((line) => line.trim()).length);
 
+// 上传 Key 保存在本机浏览器：可以存多个（例如不同上传者共用一台电脑时各存一个），
+// 刷新或重开浏览器后可直接选用；服务器只保存管理员分配的 Key 本身，不接收本机副本。
+const STORAGE_KEY = "registrator_upload_keys_v1";
+interface SavedKey {
+  label: string;
+  key: string;
+  saved_at: string;
+}
+const savedKeys = ref<SavedKey[]>([]);
+const saveLabel = ref("");
+const storageNotice = ref("");
+
+function defaultKeyLabel(value: string) {
+  return value.length > 4 ? `Key …${value.slice(-4)}` : "已保存的 Key";
+}
+function maskKey(value: string) {
+  return value.length > 8 ? `${value.slice(0, 4)}…${value.slice(-4)}` : "••••••";
+}
+function loadSavedKeys() {
+  if (typeof localStorage === "undefined") return;
+  try {
+    const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
+    savedKeys.value = (Array.isArray(parsed) ? parsed : [])
+      .filter((item: any) => item && typeof item.key === "string" && item.key.trim())
+      .map((item: any) => ({
+        label: String(item.label || "") || defaultKeyLabel(String(item.key)),
+        key: String(item.key),
+        saved_at: String(item.saved_at || ""),
+      }));
+  } catch {
+    savedKeys.value = [];
+  }
+  if (!key.value.trim() && savedKeys.value.length) key.value = savedKeys.value[0]?.key || "";
+}
+function persistSavedKeys() {
+  if (typeof localStorage === "undefined") return;
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(savedKeys.value));
+  } catch {
+    error.value = "无法写入浏览器本地存储，Key 未保存";
+  }
+}
+function saveCurrentKey() {
+  const value = key.value.trim();
+  if (!value) {
+    error.value = "请先输入上传 Key";
+    return;
+  }
+  error.value = "";
+  const label = saveLabel.value.trim() || defaultKeyLabel(value);
+  const entry: SavedKey = { label, key: value, saved_at: new Date().toISOString() };
+  savedKeys.value = [entry, ...savedKeys.value.filter((item) => item.key !== value)];
+  saveLabel.value = "";
+  persistSavedKeys();
+  storageNotice.value = `已在本机保存「${label}」`;
+}
+function useSavedKey(item: SavedKey) {
+  key.value = item.key;
+  storageNotice.value = `已填入「${item.label}」`;
+}
+function removeSavedKey(item: SavedKey) {
+  savedKeys.value = savedKeys.value.filter((entry) => entry.key !== item.key);
+  if (key.value.trim() === item.key) key.value = "";
+  persistSavedKeys();
+  storageNotice.value = `已删除「${item.label}」`;
+}
+function clearSavedKeys() {
+  if (!window.confirm("删除本机保存的全部上传 Key？")) return;
+  savedKeys.value = [];
+  key.value = "";
+  persistSavedKeys();
+  storageNotice.value = "已清空本机保存的 Key";
+}
+// 成功上传后把用过的 Key 排到最前，下次打开自动填入的是最近使用的那一个。
+function rememberUsedKey() {
+  const value = key.value.trim();
+  const used = savedKeys.value.find((item) => item.key === value);
+  if (!used) return;
+  savedKeys.value = [used, ...savedKeys.value.filter((item) => item.key !== value)];
+  persistSavedKeys();
+}
+
 async function readFile(event: Event) {
   const input = event.target as HTMLInputElement;
   const file = input.files?.[0];
@@ -46,6 +128,7 @@ async function submit() {
       body: { text: text.value },
     });
     if (result.value.ok === false) throw new Error(result.value.error || "上传失败");
+    rememberUsedKey();
     text.value = "";
     fileName.value = "";
   } catch (cause: any) {
@@ -55,6 +138,7 @@ async function submit() {
     busy.value = false;
   }
 }
+onMounted(loadSavedKeys);
 </script>
 
 <template>
@@ -72,9 +156,26 @@ async function submit() {
       <section class="card upload-card">
         <form class="card-body stack" @submit.prevent="submit">
           <label class="field">上传 Key
-            <input v-model="key" class="input" type="password" autocomplete="off" placeholder="输入公共上传 Key" :disabled="busy" required />
-            <small>Key 仅用于本次请求，请勿分享给无关人员。</small>
+            <input v-model="key" class="input" type="password" autocomplete="off" placeholder="输入后台分配的上传 Key" :disabled="busy" required />
+            <small>Key 只用于上传请求，请勿分享给无关人员。</small>
           </label>
+          <div class="saved-keys">
+            <div class="saved-keys-actions">
+              <input v-model="saveLabel" class="input" maxlength="40" placeholder="备注名（可选，例如 运营-张三）" :disabled="busy" aria-label="本机保存的备注名" />
+              <button type="button" class="btn btn-sm" :disabled="busy || !key.trim()" @click="saveCurrentKey">保存到本机</button>
+              <button v-if="savedKeys.length" type="button" class="btn btn-sm btn-ghost" :disabled="busy" @click="clearSavedKeys">清空</button>
+            </div>
+            <ul v-if="savedKeys.length" class="saved-key-list">
+              <li v-for="item in savedKeys" :key="item.key">
+                <span class="saved-key-label">{{ item.label }}</span>
+                <code>{{ maskKey(item.key) }}</code>
+                <button type="button" class="btn btn-sm" :disabled="busy" @click="useSavedKey(item)">使用</button>
+                <button type="button" class="btn btn-sm btn-danger" :disabled="busy" @click="removeSavedKey(item)">删除</button>
+              </li>
+            </ul>
+            <small class="muted">Key 只保存在本机浏览器（localStorage），不会上传到服务器；共用电脑请用完及时删除。</small>
+            <p v-if="storageNotice" class="muted" role="status">{{ storageNotice }}</p>
+          </div>
           <label class="field">从文本文件导入
             <input type="file" accept=".txt,.csv,text/plain,text/csv" :disabled="busy" @change="readFile" />
             <small v-if="fileName" class="muted">已读取 {{ fileName }}，可在下方修改。</small>
@@ -108,6 +209,16 @@ async function submit() {
 .upload-heading p { color: #91a299; font-size: 13px; margin-top: 12px; }
 .upload-card { max-width: 760px; margin: 0 auto; }
 .upload-text { width: 100%; min-height: 260px; }
+.saved-keys { display: flex; flex-direction: column; gap: 8px; }
+.saved-keys-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.saved-keys-actions .input { flex: 1; min-width: 180px; }
+.saved-key-list { list-style: none; margin: 2px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.saved-key-list li {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 8px 10px; border: 1px solid #e6ebf1; border-radius: 6px; background: #fafbfc;
+}
+.saved-key-label { font-size: 12px; font-weight: 500; min-width: 90px; overflow-wrap: anywhere; }
+.saved-key-list code { flex: 1; min-width: 90px; font-size: 11px; color: #7a8797; overflow-wrap: anywhere; }
 .import-result { padding: 13px 15px; border: 1px solid #bfe5d6; border-radius: 7px; background: #f1fbf7; overflow-wrap: anywhere; }
 .import-result ul { margin: 8px 0 0; padding-left: 20px; }
 @media (max-width: 680px) { .upload-heading h1 { font-size: 28px; } .upload-main { padding: 0 18px; margin-top: 20px; } }

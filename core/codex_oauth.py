@@ -1711,6 +1711,71 @@ def _save_sub2_local_record(
 # 入口
 # ============================================================
 
+def _codex_layer_failed(result: object) -> bool:
+    """该层是否"整体失败且没有产出授权凭据"，只有这种情况才切换下一层途径。
+
+    skipped（未开启 / 邮箱为空）、deactivated（账号已废）、success 都不换层。
+    """
+    if not isinstance(result, dict):
+        return True
+    if result.get("ok"):
+        return False
+    return str(result.get("status") or "").strip().lower() == "failed"
+
+
+def _run_codex_oauth_driver(
+    oauth_driver: str,
+    email: str,
+    otp_provider=None,
+    proxy: str | None = None,
+    force: bool = False,
+    _cpa_reauth_round: int = 1,
+) -> dict:
+    """按单个途径执行一次 Codex 授权（途径链中的一层）。"""
+    # Codex OAuth 支持多种驱动：
+    # protocol：原纯协议；roxy/cloak/browser_use/skyvern：用真实浏览器跑页面并捕获 localhost callback。
+    if oauth_driver in ("roxy", "roxybrowser", "fingerprint", "browser"):
+        from core.roxy_codex_oauth import run_roxy_codex_oauth
+        return run_roxy_codex_oauth(email, otp_provider=otp_provider, proxy=proxy, force=True)
+    if oauth_driver in ("browser_use", "browseruse", "browser-use", "bu"):
+        from core.browser_use_codex_oauth import run_browser_use_codex_oauth
+        return run_browser_use_codex_oauth(email, otp_provider=otp_provider, proxy=proxy, force=True)
+    if oauth_driver in ("skyvern", "sv"):
+        from core.skyvern_codex_oauth import run_skyvern_codex_oauth
+        return run_skyvern_codex_oauth(email, otp_provider=otp_provider, proxy=proxy, force=True)
+    if oauth_driver in ("cloak", "cloakbrowser"):
+        from config import cloakbrowser as _cloak_cfg
+        from core.cloakbrowser_driver import build_cloak_driver
+        from core.roxy_codex_oauth import run_roxy_codex_oauth
+        driver, opened = build_cloak_driver(proxy=proxy)
+        try:
+            return run_roxy_codex_oauth(
+                email,
+                otp_provider=otp_provider,
+                proxy=proxy,
+                force=True,
+                existing_driver=driver,
+                existing_opened=opened,
+                reuse_existing_profile=True,
+                clear_existing_state=True,
+            )
+        finally:
+            if not bool(getattr(_cloak_cfg, "CLOAK_KEEP_BROWSER_OPEN", False)):
+                try:
+                    driver.quit()
+                except Exception:
+                    pass
+    if oauth_driver not in ("protocol", "api", "http"):
+        raise RuntimeError(f"[Codex] 不支持的 CODEX_OAUTH_DRIVER={oauth_driver!r}，可选 protocol / roxy / cloak / browser_use / skyvern")
+    return _run_codex_oauth_protocol(
+        email,
+        otp_provider=otp_provider,
+        proxy=proxy,
+        force=force,
+        _cpa_reauth_round=_cpa_reauth_round,
+    )
+
+
 def run_codex_oauth(
     email: str,
     otp_provider=None,
@@ -1724,6 +1789,9 @@ def run_codex_oauth(
     不复用注册的 session：内部新建干净 BrowserSession，从头登录该邮箱，
     走 邮箱 OTP → 手机短信验证 → 选 workspace → 拿 code → 换 token → 落盘。
 
+    支持多途径优先级链：CODEX_OAUTH_DRIVER 可以写成 "roxy, protocol"，
+    按顺序尝试；当前层整体失败（没拿到授权凭据）时才切到下一层。
+
     Args:
         email: 已注册成功的账号邮箱
         otp_provider: 邮箱 OTP 获取回调 fn(email, after_ts)->code，默认用 wait_for_otp
@@ -1731,58 +1799,80 @@ def run_codex_oauth(
         force: True 时跳过 ENABLE_CODEX_AUTO 开关限制，供手动补跑使用
 
     Returns:
-        结构化结果 dict。任何异常都被吞掉转 status=failed，不向上抛，不影响注册主流程。
+        结构化结果 dict。除任务取消外，任何异常都被吞掉转 status=failed，不向上抛，
+        不影响注册主流程。
     """
     if not force and not _cfg.ENABLE_CODEX_AUTO:
         return _codex_result(status="skipped", message="ENABLE_CODEX_AUTO=False")
     if not email:
         return _codex_result(status="skipped", message="email 为空")
 
-    # Codex OAuth 支持多种驱动：
-    # protocol：原纯协议；roxy/cloak/browser_use：用真实浏览器跑页面并捕获 localhost callback。
-    try:
-        from config import codex as _codex_cfg
-        from config import roxybrowser as _roxy_cfg
-        oauth_driver = str(getattr(_codex_cfg, "CODEX_OAUTH_DRIVER", "protocol") or "protocol").strip().lower()
-        if oauth_driver == "same_as_registration":
-            oauth_driver = str(getattr(_roxy_cfg, "REGISTRATION_DRIVER", "protocol") or "protocol").strip().lower()
-        if oauth_driver in ("roxy", "roxybrowser", "fingerprint", "browser"):
-            from core.roxy_codex_oauth import run_roxy_codex_oauth
-            return run_roxy_codex_oauth(email, otp_provider=otp_provider, proxy=proxy, force=True)
-        if oauth_driver in ("browser_use", "browseruse", "browser-use", "bu"):
-            from core.browser_use_codex_oauth import run_browser_use_codex_oauth
-            return run_browser_use_codex_oauth(email, otp_provider=otp_provider, proxy=proxy, force=True)
-        if oauth_driver in ("skyvern", "sv"):
-            from core.skyvern_codex_oauth import run_skyvern_codex_oauth
-            return run_skyvern_codex_oauth(email, otp_provider=otp_provider, proxy=proxy, force=True)
-        if oauth_driver in ("cloak", "cloakbrowser"):
-            from config import cloakbrowser as _cloak_cfg
-            from core.cloakbrowser_driver import build_cloak_driver
-            from core.roxy_codex_oauth import run_roxy_codex_oauth
-            driver, opened = build_cloak_driver(proxy=proxy)
-            try:
-                return run_roxy_codex_oauth(
-                    email,
-                    otp_provider=otp_provider,
-                    proxy=proxy,
-                    force=True,
-                    existing_driver=driver,
-                    existing_opened=opened,
-                    reuse_existing_profile=True,
-                    clear_existing_state=True,
-                )
-            finally:
-                if not bool(getattr(_cloak_cfg, "CLOAK_KEEP_BROWSER_OPEN", False)):
-                    try:
-                        driver.quit()
-                    except Exception:
-                        pass
-        if oauth_driver not in ("protocol", "api", "http"):
-            raise RuntimeError(f"[Codex] 不支持的 CODEX_OAUTH_DRIVER={oauth_driver!r}，可选 protocol / roxy / cloak / browser_use / skyvern")
-    except ImportError:
-        # 没装 selenium / 未提供 roxy 配置时继续走协议模式，保持旧行为。
-        pass
+    from core import driver_chain
+    drivers = driver_chain.codex_oauth_drivers()
+    if len(drivers) == 1:
+        try:
+            return _run_codex_oauth_driver(
+                drivers[0], email, otp_provider, proxy, force, _cpa_reauth_round,
+            )
+        except ImportError:
+            # 没装 selenium / 未提供 roxy 配置时继续走协议模式，保持旧行为。
+            return _run_codex_oauth_driver(
+                "protocol", email, otp_provider, proxy, force, _cpa_reauth_round,
+            )
 
+    logger.info(f"[Codex][途径] 优先级链：{driver_chain.describe_chain(drivers)}")
+    result: dict | None = None
+    for index, oauth_driver in enumerate(drivers):
+        layer = index + 1
+        if index == 0:
+            logger.info(f"[Codex][途径] 第 {layer}/{len(drivers)} 层：{oauth_driver}")
+        else:
+            logger.warning(
+                f"[Codex][途径] 第 {layer}/{len(drivers)} 层：{oauth_driver}"
+                f"（上一层未产出授权凭据，换途径重试）"
+            )
+        try:
+            result = _run_codex_oauth_driver(
+                oauth_driver, email, otp_provider, proxy, force, _cpa_reauth_round,
+            )
+        except ImportError as exc:
+            # 该层依赖缺失（如未装 selenium）：记为该层失败，继续下一层。
+            logger.warning(
+                f"[Codex][途径] 第 {layer} 层 {oauth_driver} 依赖不可用，跳过该层：{exc}"
+            )
+            result = _codex_result(
+                status="failed", email=email,
+                message=f"驱动 {oauth_driver} 依赖不可用: {exc}",
+            )
+        except Exception as exc:
+            if driver_chain.is_cancellation(exc):
+                raise
+            logger.warning(
+                f"[Codex][途径] 第 {layer} 层 {oauth_driver} 异常：{type(exc).__name__}: {str(exc)[:200]}"
+            )
+            result = _codex_result(
+                status="failed", email=email,
+                message=f"{type(exc).__name__}: {str(exc)[:200]}",
+            )
+        if not _codex_layer_failed(result) or layer == len(drivers):
+            return result
+        if driver_chain.stop_requested():
+            return result
+        logger.warning(
+            f"[Codex][途径] 第 {layer} 层 {oauth_driver} 失败，准备切换下一层："
+            f"{str(result.get('message') or '')[:200]}"
+        )
+    return result if result is not None else _codex_result(status="failed", email=email, message="Codex 授权途径链为空")
+
+
+def _run_codex_oauth_protocol(
+    email: str,
+    otp_provider=None,
+    proxy: str | None = None,
+    force: bool = False,
+    _cpa_reauth_round: int = 1,
+) -> dict:
+    """纯协议（curl_cffi）Codex 授权实现。"""
     if otp_provider is None:
         from core.email_provider import wait_for_otp as otp_provider
 

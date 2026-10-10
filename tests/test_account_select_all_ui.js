@@ -8,6 +8,8 @@ const test = require('node:test');
 const root = path.join(__dirname, '..');
 const source = fs.readFileSync(path.join(root, 'webui/static/console.js'), 'utf8');
 const html = fs.readFileSync(path.join(root, 'webui/templates/index.html'), 'utf8');
+const legacy = fs.readFileSync(path.join(root, 'webui/templates/index_legacy.html'), 'utf8');
+const accountsPage = fs.readFileSync(path.join(root, 'frontend/app/pages/accounts.vue'), 'utf8');
 
 // 从 console.js 里抽取真实的函数/常量声明，保证测试跟着实现走。
 function functionSource(name) {
@@ -62,13 +64,15 @@ function selectAllHarness({total = 12000, pageSize = 5000} = {}) {
     ACCOUNT_SELECTED: new Set(), ACCOUNT_SELECTED_ROWS: new Map(), accountSelectionRevision: 0,
     ACCOUNTS: [{id: 1, email: 'one@example.com'}], ACCOUNTS_TOTAL: total,
     SHOW_ARCHIVED_ACCOUNTS: false, PAGERS: {accounts: {page: 1, size: 20}},
-    renders: 0, uiUpdates: 0,
+    renders: 0, uiUpdates: 0, loads: 0,
     document: {getElementById: node, querySelectorAll: () => []},
     getAccountLookupFilters: () => ({
       archived: '0', plan: '', codex_status: '', totp_status: '', group: '',
       redemption: 'unredeemed', date_from: '', date_to: '',
+      at_status: node('atStatusFilterV2').value || '',
     }),
     getAccountsQuery: () => 'needle',
+    loadAccounts: async () => { context.loads++; },
     api: async url => {
       urls.push(url);
       if (pending) return pending(url);
@@ -87,7 +91,7 @@ function selectAllHarness({total = 12000, pageSize = 5000} = {}) {
     .map(declarationSource).join('\n');
   vm.runInContext([prologue, ...[
     'clearAccountSelection', 'setAccountSelectAllBusy', 'getAccountSelectAllFilters',
-    'collectAccountIdsByScope', 'selectAllAccounts',
+    'collectAccountIdsByScope', 'selectAllAccounts', 'selectExpiredAccounts',
   ].map(functionSource)].join('\n'), context);
   return {
     context, node, urls, toasts,
@@ -320,4 +324,50 @@ test('真实批量操作（删除）超过后端上限时自动分片，每批�
   // 合并后的 deleted 结果继续驱动原有渲染逻辑：选中项被移除，提示使用合并后的计数。
   assert.equal(context.ACCOUNT_SELECTED.size, 0);
   assert.match(toasts.at(-1), /已删除 5002 个/);
+});
+
+test('一键选中过期账号：先切 AT 筛选为已过期，再按同一筛选全选', async () => {
+  const ui = selectAllHarness({total: 3000});
+  await ui.context.selectExpiredAccounts();
+
+  // AT 下拉被切到「已过期」，列表回到第一页并重新加载。
+  assert.equal(ui.node('atStatusFilterV2').value, 'expired');
+  assert.equal(ui.context.loads, 1);
+  assert.equal(ui.context.PAGERS.accounts.page, 1);
+  // 全选请求带 at_status=expired，选中集合与列表口径一致。
+  assert.ok(ui.urls.length >= 1);
+  assert.ok(ui.urls.every(url => url.startsWith('/api/accounts/ids?') && url.includes('at_status=expired')));
+  assert.equal(ui.context.ACCOUNT_SELECTED.size, 3000);
+  assert.match(ui.toasts.at(-1), /已选中过期账号（3000 个）/);
+  // 进度显示在「选中过期账号」按钮上，结束后恢复原文案。
+  assert.equal(ui.node('btnSelectExpiredAccountsV2').textContent, '选中过期账号');
+  assert.equal(ui.node('btnSelectExpiredAccountsV2').disabled, false);
+});
+
+test('一键选中过期账号运行中不会重复发起全选', async () => {
+  let release;
+  const ui = selectAllHarness({total: 500});
+  ui.setPending(() => new Promise(resolve => { release = () => resolve({ok: true, ids: [1], total: 500}); }));
+  const first = ui.context.selectExpiredAccounts();
+  await ui.context.selectExpiredAccounts(); // 并发保护：直接返回
+  assert.equal(ui.urls.length, 1);
+  release();
+  await first;
+  assert.equal(ui.urls.length, 1);
+});
+
+test('三个控制台都提供「选中过期账号」入口', () => {
+  // 旧版侧边栏（console.js + index.html）
+  assert.match(html, /id="btnSelectExpiredAccountsV2"[^>]*>选中过期账号<\/button>/);
+  assert.match(source, /bind\('btnSelectExpiredAccountsV2', \(\) => selectExpiredAccounts\(\)\)/);
+  assert.match(source, /btnSelectExpiredAccountsV2/);
+  // 历史版顶部导航
+  assert.match(legacy, /id="btnSelectExpiredAccounts"[^>]*>选中过期账号<\/button>/);
+  assert.match(legacy, /\$\('#btnSelectExpiredAccounts'\)\.addEventListener\('click', \(\) => selectExpiredAccounts\(\)\)/);
+  assert.match(legacy, /function selectExpiredAccounts\(\)/);
+  // Nuxt 控制台
+  assert.match(accountsPage, /@click="selectExpiredAccounts"/);
+  assert.match(accountsPage, /async function selectExpiredAccounts\(\)/);
+  assert.match(accountsPage, /filters\.at_status = "expired"/);
+  assert.match(accountsPage, /selectAllAccounts\("filtered", "expired", "过期账号"\)/);
 });

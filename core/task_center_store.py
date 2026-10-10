@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import re
 import time
+import uuid
 from contextlib import closing
 from datetime import datetime
 
@@ -165,6 +166,17 @@ def _initialize(conn):
         id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL,
         created_at TEXT NOT NULL, source_status TEXT NOT NULL, message TEXT NOT NULL
     )""")
+    # 一次批量提交 = 一个批次；成员只保存任务身份与邮箱，不含任何凭据。
+    conn.execute("""CREATE TABLE IF NOT EXISTS task_batches (
+        id TEXT PRIMARY KEY, job_type TEXT NOT NULL, label TEXT NOT NULL DEFAULT '',
+        total INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'open',
+        created_at TEXT NOT NULL, completed_at TEXT
+    )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS task_batch_members (
+        batch_id TEXT NOT NULL, job_type TEXT NOT NULL, member_key TEXT NOT NULL,
+        email TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL,
+        PRIMARY KEY (batch_id, member_key)
+    )""")
     for statement in (
         "CREATE INDEX IF NOT EXISTS idx_account_tasks_status ON account_tasks(status, id DESC)",
         "CREATE INDEX IF NOT EXISTS idx_account_tasks_lease ON account_tasks(job_type, source_status, status, lease_until)",
@@ -172,6 +184,8 @@ def _initialize(conn):
         "CREATE INDEX IF NOT EXISTS idx_account_tasks_created ON account_tasks(created_at DESC, id DESC)",
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_account_tasks_record ON account_tasks(job_type, source_record_id) WHERE source_record_id!=''",
         "CREATE INDEX IF NOT EXISTS idx_account_task_events_task ON account_task_events(task_id, id)",
+        "CREATE INDEX IF NOT EXISTS idx_task_batch_members_lookup ON task_batch_members(job_type, member_key)",
+        "CREATE INDEX IF NOT EXISTS idx_task_batches_created ON task_batches(created_at DESC)",
     ):
         conn.execute(statement)
     if not conn.in_transaction:
@@ -207,18 +221,175 @@ def _event(conn, task_id, kind, source, timestamp, message=None):
     )
 
 
-def _notify_completion(conn, *, task_id, event_key, kind, status, completed_at, email):
-    """Enqueue only allowlisted task metadata in the caller's transaction."""
+_FAILURE_STATES = {"failed", "needs_attention"}
+_TERMINAL_STATES = ("success", "failed", "cancelled", "stopped", "needs_attention")
+
+
+def member_key(*, job_type, account_id=None, job_id=None) -> str:
+    """批次成员键：注册任务按任务编号，其余按账号编号，便于两条链路共用。"""
+    if job_type == "registration":
+        value = job_id
+    else:
+        value = account_id if account_id not in (None, "") else job_id
+    return "" if value in (None, "") else str(value)
+
+
+def _member_state(conn, job_type, key) -> str:
+    """成员当前状态：取该任务身份最新一次执行；查不到按待核实处理，避免批次卡死。"""
+    try:
+        number = int(str(key))
+    except (TypeError, ValueError):
+        return "needs_attention"
+    if job_type == "registration":
+        row = conn.execute("SELECT status FROM registration_jobs WHERE id=? LIMIT 1", (number,)).fetchone()
+    else:
+        row = conn.execute("""SELECT status FROM account_tasks WHERE job_type=? AND account_id=?
+            ORDER BY id DESC LIMIT 1""", (job_type, number)).fetchone()
+    if row is None:
+        return "needs_attention"
+    return _NORMALIZED[_source(row["status"])]
+
+
+def _open_batch_for_member(conn, job_type, key):
+    if not key:
+        return None
+    return conn.execute("""SELECT b.* FROM task_batch_members m JOIN task_batches b ON b.id=m.batch_id
+        WHERE m.job_type=? AND m.member_key=? AND b.status='open'
+        ORDER BY b.created_at DESC, b.rowid DESC LIMIT 1""", (job_type, str(key))).fetchone()
+
+
+def _member_batch(conn, job_type, key):
+    """批次详情用于任务详情页：包含已完成的批次，便于回溯本次提交。"""
+    if not key:
+        return None
+    row = conn.execute("""SELECT b.* FROM task_batch_members m JOIN task_batches b ON b.id=m.batch_id
+        WHERE m.job_type=? AND m.member_key=?
+        ORDER BY b.created_at DESC, b.rowid DESC LIMIT 1""", (job_type, str(key))).fetchone()
+    if row is None:
+        return None
+    return {"id": row["id"], "label": row["label"], "job_type": row["job_type"],
+            "total": int(row["total"]), "status": row["status"],
+            "created_at": _timestamp(row["created_at"]), "completed_at": _timestamp(row["completed_at"])}
+
+
+def _member_email(conn, job_type, key, stored="") -> str:
+    """成员邮箱：登记时没带上就按任务身份回查账号，仍查不到则留空。"""
+    if stored:
+        return _email(stored)
+    try:
+        number = int(str(key))
+    except (TypeError, ValueError):
+        return ""
+    table = "registration_jobs" if job_type == "registration" else "accounts"
+    row = conn.execute(f"SELECT email FROM {table} WHERE id=? LIMIT 1", (number,)).fetchone()
+    return _email(row["email"]) if row else ""
+
+
+def _enqueue_batch_notification(conn, batch_id, batch, members, states, completed_at):
+    """组内全部到达终态后只发一封汇总，邮箱清单只含账号邮箱。"""
+    from core.mail_notifications import enqueue_notification
+
+    job_type = batch["job_type"] if batch["job_type"] in LABELS else "registration"
+    counts = {state: 0 for state in _TERMINAL_STATES}
+    for state in states:
+        counts[state] = counts.get(state, 0) + 1
+    emails = [email for row in members
+              if (email := _member_email(conn, batch["job_type"], row["member_key"], row["email"]))]
+    label = batch["label"] or f"{LABELS[job_type]}批次"
+    enqueue_notification(
+        conn, event_key=f"task:batch:{batch_id}:completed", category="task",
+        title=f"{LABELS[job_type]} · 批次完成 {counts['success']}/{len(members)}",
+        fields={"批次": label, "批次编号": batch_id, "任务类型": LABELS[job_type],
+                "提交数量": str(len(members)), "成功": str(counts["success"]),
+                "失败": str(counts["failed"]), "已取消": str(counts["cancelled"] + counts["stopped"]),
+                "待核实": str(counts["needs_attention"]),
+                "提交时间": _timestamp(batch["created_at"], db._now()), "完成时间": completed_at},
+        emails=emails,
+    )
+
+
+def _maybe_complete_batch(conn, batch_id) -> bool:
+    """在调用方事务内判定批次是否完成；完成时同事务入队汇总邮件。"""
+    batch = conn.execute("SELECT * FROM task_batches WHERE id=? AND status='open'", (batch_id,)).fetchone()
+    if batch is None:
+        return False
+    members = conn.execute("SELECT * FROM task_batch_members WHERE batch_id=? ORDER BY member_key",
+                           (batch_id,)).fetchall()
+    if not members:
+        return False
+    states = [_member_state(conn, batch["job_type"], row["member_key"]) for row in members]
+    if any(state not in _TERMINAL_STATES for state in states):
+        return False
+    now = db._now()
+    updated = conn.execute("UPDATE task_batches SET status='completed', completed_at=? WHERE id=? AND status='open'",
+                           (now, batch_id)).rowcount
+    if not updated:
+        return False
+    _enqueue_batch_notification(conn, batch_id, batch, members, states, now)
+    return True
+
+
+def record_batch(job_type: str, members, *, label: str = "") -> str | None:
+    """登记一次批量提交的批次与成员，返回批次号；没有成员时返回 None。
+
+    在批量接口收集到已受理任务后调用，成员状态从任务表读取，因此即使任务
+    在登记前就已结束，批次也能立即判定完成。
+    """
+    job_type = str(job_type or "")
+    if job_type not in LABELS:
+        raise ValueError("不支持的任务类型")
+    roster, seen = [], set()
+    for item in members or ():
+        if isinstance(item, dict):
+            key = item.get("id", item.get("account_id", item.get("job_id")))
+            email = item.get("email")
+        else:
+            pair = list(item)
+            key, email = pair[0], pair[1] if len(pair) > 1 else ""
+        key = "" if key in (None, "") else str(key)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        roster.append((key, _email(email)))
+    if not roster:
+        return None
+    batch_id = "taskbatch-" + uuid.uuid4().hex
+    now = db._now()
+    display_label = str(label or "").strip()[:120] or f"{LABELS[job_type]} {now}"
+    with db._row_write_transaction() as conn:
+        conn.execute("""INSERT INTO task_batches(id,job_type,label,total,status,created_at)
+            VALUES(?,?,?,?,'open',?)""",
+            (batch_id, job_type, display_label, len(roster), now))
+        conn.executemany("""INSERT INTO task_batch_members(batch_id,job_type,member_key,email,created_at)
+            VALUES(?,?,?,?,?)""",
+            [(batch_id, job_type, key, email, now) for key, email in roster])
+        _maybe_complete_batch(conn, batch_id)
+    return batch_id
+
+
+def _notify_completion(conn, *, task_id, event_key, kind, status, completed_at, email, key=None):
+    """Enqueue only allowlisted task metadata in the caller's transaction.
+
+    属于某个批次的非失败任务不再单独发信，由批次汇总统一通知；失败与待核实
+    仍然单独发一封，便于第一时间处理。判定必须在批次完成之前完成。
+    """
     from core.mail_notifications import enqueue_notification
 
     kind = kind if kind in LABELS else "registration"
     email = _email(email)
+    # 判定必须在批次完成之前完成，否则最后一个任务会被当成批次外任务重复发信。
+    batch = _open_batch_for_member(conn, kind, key) if key else None
+    if batch is not None and status not in _FAILURE_STATES:
+        _maybe_complete_batch(conn, batch["id"])
+        return
     enqueue_notification(
         conn, event_key=event_key, category="task", title=f"{LABELS[kind]} · {_STAGE[status]}",
         fields={"任务编号": task_id, "任务类型": LABELS[kind], "任务状态": _STAGE[status],
                 "结束时间": _timestamp(completed_at, db._now())},
         emails=[email] if email else [],
     )
+    if batch is not None:
+        _maybe_complete_batch(conn, batch["id"])
 
 
 def _store_state(conn, account, kind, source, *, task=None, created_at=None,
@@ -256,7 +427,8 @@ def _store_state(conn, account, kind, source, *, task=None, created_at=None,
     if notify and status not in ACTIVE and (task is None or task["status"] in ACTIVE):
         _notify_completion(conn, task_id=f"account-{task_id}",
                            event_key=f"task:account:{task_id}:completed", kind=kind,
-                           status=status, completed_at=completed, email=email)
+                           status=status, completed_at=completed, email=email,
+                           key=member_key(job_type=kind, account_id=account.get("id")))
     return task_id
 
 
@@ -456,7 +628,8 @@ def set_task_control_state(kind: str, account_id, state: str) -> bool:
         if status not in ACTIVE:
             _notify_completion(conn, task_id=f"account-{task['id']}",
                                event_key=f"task:account:{task['id']}:completed", kind=kind,
-                               status=status, completed_at=now, email=task["email"])
+                               status=status, completed_at=now, email=task["email"],
+                               key=member_key(job_type=kind, account_id=parsed_id))
     return True
 
 
@@ -678,6 +851,13 @@ def _parse_id(task_id):
     return (match.group(1), number) if number <= 2**63 - 1 else None
 
 
+def _row_value(row, name):
+    try:
+        return row[name]
+    except (IndexError, KeyError):
+        return None
+
+
 def get_task(task_id) -> dict | None:
     parsed = _parse_id(task_id)
     if parsed is None:
@@ -687,7 +867,13 @@ def get_task(task_id) -> dict | None:
     query = _REG_SELECT if kind == "registration" else _ACCOUNT_SELECT
     with closing(db._sqlite_conn()) as conn:
         row = conn.execute(query + " WHERE id=? LIMIT 1", (number,)).fetchone()
-        return _public(row, conn) if row else None
+        if row is None:
+            return None
+        task = _public(row, conn)
+        job_type = str(task.get("job_type") or "")
+        task["batch"] = _member_batch(conn, job_type, member_key(
+            job_type=job_type, account_id=_row_value(row, "account_id"), job_id=_row_value(row, "job_id")))
+        return task
 
 
 def _operation_log_detail(kind: str, account_id) -> str | None:

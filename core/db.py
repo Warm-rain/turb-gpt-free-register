@@ -322,6 +322,26 @@ def _account_at_state(row: dict) -> str:
     return "expired" if time.time() >= derived else "valid"
 
 
+def _account_at_expiry_seconds(row: dict) -> float | None:
+    """推算 AT 到期时间戳：优先套餐查询写回的 token_expires_at，缺失时回退解析 JWT exp。
+
+    与 `_account_at_state` 的判定顺序一致：只有拿到具体时间才能展示「到期时间」，
+    因此这里不做 token_expired 布尔短路——标记为已过期但无时间的账号仍返回 None。
+    """
+    expires_at = _iso_utc_timestamp(row.get("token_expires_at"))
+    if expires_at is not None:
+        return expires_at
+    return _jwt_expiry_seconds(row.get("access_token"))
+
+
+def _account_at_expiry_iso(row: dict) -> str:
+    """AT 到期时间的 ISO UTC 文本（供前端展示）；没有任何过期信息时返回空串。"""
+    expires_at = _account_at_expiry_seconds(row)
+    if expires_at is None:
+        return ""
+    return datetime.fromtimestamp(expires_at, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+
+
 def _account_at_expired_sql(token: object) -> int | None:
     """SQLite 回调（account_at_expired）：1=已过期，0=未过期，NULL=无法判断。"""
     exp = _jwt_expiry_seconds(token)
@@ -776,6 +796,17 @@ def _ensure_sqlite() -> None:
                 created_at TEXT NOT NULL DEFAULT '',
                 updated_at TEXT NOT NULL DEFAULT '',
                 UNIQUE(provider_id, cdk)
+            );
+            CREATE TABLE IF NOT EXISTS upload_keys (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                label TEXT NOT NULL DEFAULT '',
+                upload_key TEXT NOT NULL UNIQUE,
+                note TEXT NOT NULL DEFAULT '',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                use_count INTEGER NOT NULL DEFAULT 0,
+                last_used_at TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT ''
             );
         """)
         _ensure_account_registration_schema(conn)
@@ -1850,7 +1881,11 @@ def _decorate_account(row: dict) -> dict:
     _apply_quota_check_staleness(out)
     out["copy_line"] = _account_line(out)
     # 列表里的「AT 已过期」标记与 at_status 筛选共用同一判定，避免看到的状态和筛出来的集合不一致。
-    out["at_expired"] = _account_at_state(out) == "expired"
+    at_state = _account_at_state(out)
+    out["at_state"] = at_state
+    out["at_expired"] = at_state == "expired"
+    # 自动推算的 AT 到期时间：套餐查询写回的时间，缺失时直接解析 access_token 的 JWT exp。
+    out["at_expires_at"] = _account_at_expiry_iso(out)
     return out
 
 
@@ -1860,7 +1895,10 @@ def _decorate_account_status(row: dict) -> dict:
     out["group_name"] = _account_group_name(out)
     _apply_plan_check_staleness(out)
     _apply_quota_check_staleness(out)
-    out["at_expired"] = _account_at_state(out) == "expired"
+    at_state = _account_at_state(out)
+    out["at_state"] = at_state
+    out["at_expired"] = at_state == "expired"
+    out["at_expires_at"] = _account_at_expiry_iso(out)
     return out
 
 
@@ -3548,6 +3586,8 @@ def list_account_plan_check_statuses(
             item["has_access_token"] = bool(str(row.get("access_token") or "").strip())
             # 轻量轮询也要带上 AT 过期标记，否则列表徽标会在轮询后被旧值覆盖。
             item["at_expired"] = bool(row.get("at_expired"))
+            item["at_state"] = row.get("at_state") or ""
+            item["at_expires_at"] = row.get("at_expires_at") or ""
             items.append(item)
         # updated_at 目前只有秒级精度；一次快速查询可能在同一秒内完成
         # queued -> running -> success/failed，导致 revision 不变，前端跳过合并状态，
@@ -5512,6 +5552,8 @@ def update_job(
                 event_key=f"task:registration:{identity}:completed", kind=kind,
                 status=terminal, completed_at=row.get("completed_at") or row["updated_at"],
                 email=row.get("email"),
+                key=task_center_store.member_key(
+                    job_type=kind, account_id=row.get("account_id"), job_id=row["id"]),
             )
 
 

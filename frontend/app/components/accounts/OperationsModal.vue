@@ -14,6 +14,7 @@ import {
   accountResultDetails,
   accountSafeUrl,
   accountStatus,
+  accountTokenInfo,
   chunkAccountIds,
   copyAccountText,
   downloadAccountFile,
@@ -66,7 +67,19 @@ const group = ref(
 );
 const source = ref("outlook");
 const emailSuffix = ref("");
+// 换绑弹窗里的常用后缀：点一下即填入，仍可手动改写。
+const EMAIL_SUFFIX_PRESETS = ["icloud.com", "outook.com", "dr.com", "duck.com"];
 const supportsEmailSuffix = computed(() => !["gptmail", "mailnest"].includes(source.value));
+function pickEmailSuffix(suffix: string) {
+  if (!supportsEmailSuffix.value) return;
+  emailSuffix.value = suffix;
+}
+function isEmailSuffixActive(suffix: string) {
+  return (
+    supportsEmailSuffix.value &&
+    emailSuffix.value.trim().replace(/^@/, "").toLowerCase() === suffix
+  );
+}
 const emailSuffixHint = computed(() =>
   !supportsEmailSuffix.value
     ? "该来源暂不支持指定后缀，按来源默认规则领取。"
@@ -652,6 +665,12 @@ async function copy(value: string) {
             <dt>注册时间</dt>
             <dd>{{ accountDate(first.registered_at || first.created_at) }}</dd>
           </div>
+          <div>
+            <dt>AT 到期</dt>
+            <dd :title="accountTokenInfo(first).title">
+              {{ accountTokenInfo(first).label }}
+            </dd>
+          </div>
           <div v-if="first.original_email">
             <dt>原邮箱</dt>
             <dd>{{ first.original_email }}</dd>
@@ -822,16 +841,38 @@ async function copy(value: string) {
               <option value="remail">ReMail</option>
             </select></label
           >
-          <label v-if="mode === 'email'" class="field"
-            >邮箱后缀（可选）<input
+          <div v-if="mode === 'email'" class="field">
+            <label for="email-change-suffix">邮箱后缀（可选）</label>
+            <input
+              id="email-change-suffix"
               v-model="emailSuffix"
               class="input"
               :disabled="!supportsEmailSuffix"
               autocomplete="off"
               :spellcheck="false"
               placeholder="例如 outlook.com 或 @outlook.com"
-            /><small class="muted">{{ emailSuffixHint }}</small></label
-          >
+            />
+            <div
+              class="email-suffix-presets"
+              role="group"
+              aria-label="常用邮箱后缀"
+            >
+              <span>常用：</span>
+              <button
+                v-for="preset in EMAIL_SUFFIX_PRESETS"
+                :key="preset"
+                type="button"
+                class="btn btn-sm email-suffix-chip"
+                :class="{ 'is-active': isEmailSuffixActive(preset) }"
+                :disabled="!supportsEmailSuffix"
+                :aria-pressed="isEmailSuffixActive(preset)"
+                @click="pickEmailSuffix(preset)"
+              >
+                {{ preset }}
+              </button>
+            </div>
+            <small class="muted">{{ emailSuffixHint }}</small>
+          </div>
           <label v-if="mode === 'retry'" class="field"
             >并发线程数<input
               v-model.number="workers"
@@ -1117,6 +1158,22 @@ async function copy(value: string) {
   overflow: auto;
   margin-top: 8px;
   font-size: 12px;
+}
+.email-suffix-presets {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.email-suffix-presets > span {
+  font-size: 11px;
+  font-weight: 400;
+  color: #8b97a5;
+}
+.email-suffix-chip.is-active {
+  border-color: var(--accent);
+  background: var(--accent-light, #eaf6f2);
+  color: var(--accent);
 }
 .account-facts {
   display: grid;

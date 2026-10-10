@@ -2,9 +2,20 @@
 from flask import jsonify, request, session
 
 from core import scan_api_service as service, orderhub_client, plus_activation_service
+from core import task_center_store
 from core.scan_api_client import ScanApiError, _safe_message
 
 _SESSION_KEY = "orderhub_session_handle"
+
+
+def _record_batch(job_type: str, items) -> str | None:
+    """一次提交登记一个批次；登记失败不影响支付/开通本身。"""
+    try:
+        return task_center_store.record_batch(job_type, items)
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception("登记任务批次失败 job_type=%s", job_type)
+        return None
 
 
 def _json_object():
@@ -57,6 +68,7 @@ def register_scan_routes(app):
                 payment_options=payment, auth_session=auth_sessions,
                 success_group=data.get("success_group"),
             )
+            result["task_batch_id"] = _record_batch("plus_activation", result.get("started") or [])
             return _no_store(jsonify(result)), 202
         except Exception as exc:
             # Never include upstream credentials echoed by validation errors.
@@ -82,6 +94,9 @@ def register_scan_routes(app):
                 provider=data.get("provider", "v1"), idempotency_key=data.get("idempotency_key"),
                 auth_session=_auth_session(data),
             )
+            # 只有本次真正提交/等待受理的账号进入批次，重复项沿用原任务不重复计数。
+            members = [*result.get("created", []), *result.get("pending", [])]
+            result["task_batch_id"] = _record_batch("scan_payment", members)
             return _no_store(jsonify(result))
         except Exception as exc:
             return _error(exc, data.get("cdk"))

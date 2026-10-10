@@ -12,6 +12,10 @@ export interface Account {
   registered_at?: string;
   /** access_token 是否已过期/失效（后端按 token_expired、token_expires_at 或 JWT exp 判定）。 */
   at_expired?: boolean;
+  /** AT 状态：expired / valid / unknown，与 at_status 筛选同一判定。 */
+  at_state?: "expired" | "valid" | "unknown";
+  /** 后端自动推算的 AT 到期时间（ISO UTC）：token_expires_at，缺失时回退 JWT exp。 */
+  at_expires_at?: string;
   [key: string]: any;
 }
 export interface AccountGroup {
@@ -87,6 +91,59 @@ export function accountPlan(account: Account) {
   return plan
     ? `${accountPlanLabel(plan)}${account.plus_trial_eligible ? " · 可试用 Plus" : ""}`
     : "尚未查询";
+}
+
+export interface AccountTokenInfo {
+  /** 与后端 at_status 筛选一致的状态。 */
+  state: "expired" | "valid" | "unknown";
+  /** 列表主文本：已过期 / 有效至 2026-07-17 17:38 / 信息不足。 */
+  label: string;
+  /** 到期时间文本；没有可推算的时间时为空。 */
+  expiresLabel: string;
+  /** 悬停提示：说明判定来源与是否需要查活刷新。 */
+  title: string;
+}
+/**
+ * access_token 过期状态与到期时间展示信息。
+ *
+ * 到期时间由后端自动推算：套餐查询写回的 token_expires_at，缺失时直接解析
+ * access_token 的 JWT `exp`，因此从未查过套餐的新账号也能显示具体到期时间。
+ * 状态判定与列表筛选共用后端 at_state，避免「看到的状态」和「筛出来的集合」不一致。
+ */
+export function accountTokenInfo(account: Account): AccountTokenInfo {
+  const raw = String(account.at_state || "").toLowerCase();
+  const state: AccountTokenInfo["state"] =
+    raw === "expired" || raw === "valid" || raw === "unknown"
+      ? raw
+      : account.at_expired
+        ? "expired"
+        : account.at_expires_at
+          ? "valid"
+          : "unknown";
+  const expiresLabel = account.at_expires_at
+    ? accountDate(account.at_expires_at)
+    : "";
+  const label =
+    state === "expired"
+      ? expiresLabel
+        ? `已过期 · ${expiresLabel}`
+        : "已过期"
+      : state === "valid"
+        ? expiresLabel
+          ? `有效至 ${expiresLabel}`
+          : "未过期"
+        : "信息不足";
+  const title =
+    state === "expired"
+      ? `access_token 已过期${
+          expiresLabel ? `（到期时间：${expiresLabel}）` : ""
+        }，需要重新查活刷新 AT`
+      : state === "valid"
+        ? `access_token 未过期${
+            expiresLabel ? `，到期时间：${expiresLabel}` : ""
+          }`
+        : "无法判断 access_token 是否过期：既没有 token_expires_at，access_token 也不是可解析的 JWT";
+  return { state, label, expiresLabel, title };
 }
 
 export interface AccountPlanPromo {

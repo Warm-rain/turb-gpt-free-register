@@ -1443,8 +1443,11 @@ function renderTaskLogDetails(task) {
   const details = $('#logTaskDetails');
   if (!details) return;
   const message = task.error_message || task.progress_message || task.stage || '';
+  const batch = task.batch
+    ? `<div>所属批次：${esc(task.batch.label || task.batch.id)} · ${esc(String(task.batch.total || 0))} 个任务 · ${task.batch.status === 'completed' ? '已完成' : '进行中'}</div>`
+    : '';
   details.innerHTML = `<strong>${esc(taskCenterLabel(task))}</strong> ${taskCenterStatusPill(task)}
-    <span>${esc(task.email || '未分配邮箱')}</span>${message ? `<div>${esc(message)}</div>` : ''}`;
+    <span>${esc(task.email || '未分配邮箱')}</span>${message ? `<div>${esc(message)}</div>` : ''}${batch}`;
   details.classList.remove('hidden');
 }
 
@@ -2003,6 +2006,8 @@ function _tokenCellV2(r) {
   else if (live === 'deactivated') liveHtml = `<div class="acc-v2-sub" title="${esc(liveErr || liveAt)}" style="color:#f56c6c">查活: 已废</div>`;
   else if (live === 'failed') liveHtml = `<div class="acc-v2-sub" title="${esc(liveErr || liveAt)}" style="color:#e6a23c">查活: 失败</div>`;
   if (r.at_expired) liveHtml += '<div class="acc-v2-sub" title="access_token 已过期或失效，需要重新查活刷新 AT" style="color:#f56c6c">AT: 已过期</div>';
+  // 到期时间由后端自动推算（token_expires_at 或 JWT exp），过期与否都能看到具体时间。
+  if (r.at_expires_at) liveHtml += `<div class="acc-v2-sub" title="access_token 到期时间（自动推算）">AT 到期: ${esc(formatDateTime(r.at_expires_at))}</div>`;
   if (r.has_access_token) {
     return `<button type="button" class="acc-v2-token-copy" data-account-copy-secret="access_token" data-account-id="${esc(r.id)}" title="复制完整 Token">复制</button>${liveHtml}`;
   }
@@ -2163,7 +2168,7 @@ function getAccountSelectAllFilters() {
 }
 function setAccountSelectAllBusy(busy) {
   accountSelectAllBusy = !!busy;
-  ['btnSelectFilteredAccountsV2', 'btnSelectAllAccountsV2'].forEach(id => {
+  ['btnSelectFilteredAccountsV2', 'btnSelectAllAccountsV2', 'btnSelectExpiredAccountsV2'].forEach(id => {
     const btn = document.getElementById(id);
     if (btn) btn.disabled = !!busy;
   });
@@ -2192,11 +2197,13 @@ async function collectAccountIdsByScope(scope, onProgress) {
   }
   return {ids, total};
 }
-async function selectAllAccounts(scope) {
+async function selectAllAccounts(scope, successLabel = '', buttonId = '') {
   const normalized = scope === 'all' ? 'all' : 'filtered';
   if (accountSelectAllBusy) return;
-  const btn = document.getElementById(normalized === 'all' ? 'btnSelectAllAccountsV2' : 'btnSelectFilteredAccountsV2');
-  const label = normalized === 'all' ? '全选所有账号' : '选择全部筛选结果';
+  const btn = document.getElementById(buttonId || (normalized === 'all' ? 'btnSelectAllAccountsV2' : 'btnSelectFilteredAccountsV2'));
+  const label = buttonId === 'btnSelectExpiredAccountsV2'
+    ? '选中过期账号'
+    : (normalized === 'all' ? '全选所有账号' : '选择全部筛选结果');
   // 与邮箱查找同一套并发保护：用户中途清空选择/改筛选（都会 bump revision）时放弃本次结果。
   const revision = accountSelectionRevision;
   setAccountSelectAllBusy(true);
@@ -2223,13 +2230,28 @@ async function selectAllAccounts(scope) {
     updateAccountSelectionUi();
     showToast(normalized === 'all'
       ? `已选中账号库全部 ${ids.length} 个账号（含已兑换与已归档）`
-      : `已选中筛选结果中的 ${ids.length} 个账号`);
+      : successLabel
+        ? `已选中${successLabel}（${ids.length} 个）`
+        : `已选中筛选结果中的 ${ids.length} 个账号`);
   } catch (err) {
     showToast('选择账号失败: ' + err.message);
   } finally {
     if (btn) btn.textContent = label;
     setAccountSelectAllBusy(false);
   }
+}
+/**
+ * 一键选中过期账号：先把 AT 筛选切到「已过期」并刷新列表，再按同一筛选全选。
+ * 列表、按钮计数和选中集合口径一致，用户能直接看到被选中的是哪些账号。
+ */
+async function selectExpiredAccounts() {
+  if (accountSelectAllBusy) return;
+  const select = document.getElementById('atStatusFilterV2');
+  if (select) select.value = 'expired';
+  clearAccountSelection();
+  if (PAGERS.accounts) PAGERS.accounts.page = 1;
+  await loadAccounts();
+  await selectAllAccounts('filtered', '过期账号', 'btnSelectExpiredAccountsV2');
 }
 
 // ---------- 补跑日志面板 ----------
@@ -3809,13 +3831,29 @@ async function submitEmailChange() {
 function updateEmailChangeSuffixField() {
   const source = $('#emailChangeSourceV2').value;
   const unsupported = ['gptmail', 'mailnest'].includes(source);
-  $('#emailChangeSuffixV2').disabled = unsupported;
+  const suffixField = $('#emailChangeSuffixV2');
+  const presetButtons = document.querySelectorAll('.email-suffix-preset');
+  suffixField.disabled = unsupported;
+  presetButtons.forEach(button => {
+    button.disabled = unsupported;
+    button.classList.toggle('is-active', !unsupported && suffixField.value.trim().replace(/^@/, '').toLowerCase() === button.dataset.emailSuffix);
+  });
   $('#emailChangeSuffixHintV2').textContent = unsupported
     ? '该来源暂不支持指定后缀，按来源默认规则领取。'
     : source === 'cloudflare_domain'
       ? '可填写已配置的域名邮箱后缀；留空使用配置中的域名。'
       : '留空使用来源默认规则；填写后只领取该后缀的邮箱，邮箱池需有匹配的可用地址。';
 }
+document.querySelectorAll('.email-suffix-preset').forEach(button => {
+  button.addEventListener('click', () => {
+    const suffixField = $('#emailChangeSuffixV2');
+    if (suffixField.disabled) return;
+    suffixField.value = button.dataset.emailSuffix || '';
+    updateEmailChangeSuffixField();
+    suffixField.focus();
+  });
+});
+$('#emailChangeSuffixV2').addEventListener('input', updateEmailChangeSuffixField);
 $('#emailChangeSourceV2').addEventListener('change', updateEmailChangeSuffixField);
 $('#btnCloseEmailChangeV2').addEventListener('click', closeEmailChangeModal);
 $('#btnCancelEmailChangeV2').addEventListener('click', closeEmailChangeModal);
@@ -3880,6 +3918,7 @@ function positionAccountActionMenu(menu) {
   bind('btnClearAccountSelectionV2', clearAccountSelection);
   bind('btnSelectFilteredAccountsV2', () => selectAllAccounts('filtered'));
   bind('btnSelectAllAccountsV2', () => selectAllAccounts('all'));
+  bind('btnSelectExpiredAccountsV2', () => selectExpiredAccounts());
   bind('btnCheckSelectedPlansV2', checkSelectedPlans);
   bind('btnActivateSelectedPlusV2', () => {
     const ids = Array.from(ACCOUNT_SELECTED).map(Number);
@@ -4993,14 +5032,109 @@ function registrationDriverChoices() {
     { value: 'skyvern', label: 'skyvern' },
   ];
 }
+// ---- 多途径优先级链（注册 / 查活 / Codex 授权）----
+// 配置项本身是字符串，界面按顺序拆成若干层，保存时拼回 "a, b, c"。
+function parseDriverChainText(text) {
+  return String(text == null ? '' : text)
+    .replace(/->|=>|→|⇒|>/g, ',')
+    .toLowerCase()
+    .split(/[,;|，；、\s]+/)
+    .map(item => item.trim())
+    .filter(Boolean);
+}
+function driverChainChoices(f) {
+  return Array.isArray(f && f.choices) ? f.choices : [];
+}
+function driverChainFieldValue(f) {
+  if (!f) return '';
+  const fv = Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, f.key) ? CONFIG_PENDING_UPDATES[f.key] : f.value;
+  return String(fv == null ? '' : fv);
+}
+function driverChainItems(f) {
+  return parseDriverChainText(driverChainFieldValue(f));
+}
+function driverChainLabel(f, value) {
+  const cur = String(value == null ? '' : value).toLowerCase();
+  const hit = driverChainChoices(f).find(c => String(c.value).toLowerCase() === cur);
+  return hit ? String(hit.label || hit.value) : cur;
+}
+function driverChainRemaining(f) {
+  const used = driverChainItems(f);
+  return driverChainChoices(f).filter(c => !used.includes(String(c.value).toLowerCase()));
+}
+function applyDriverChainAction(chain, action, index) {
+  const items = Array.isArray(chain) ? [...chain] : [];
+  const at = Number(index);
+  if (action === 'up') {
+    if (!Number.isInteger(at) || at <= 0 || at >= items.length) return items;
+    [items[at - 1], items[at]] = [items[at], items[at - 1]];
+  } else if (action === 'down') {
+    if (!Number.isInteger(at) || at < 0 || at >= items.length - 1) return items;
+    [items[at + 1], items[at]] = [items[at], items[at + 1]];
+  } else if (action === 'remove') {
+    if (!Number.isInteger(at) || at < 0 || at >= items.length) return items;
+    items.splice(at, 1);
+  }
+  return items;
+}
+function driverChainAppendValue(chain, choices, picked) {
+  const items = Array.isArray(chain) ? [...chain] : [];
+  const remaining = (Array.isArray(choices) ? choices : [])
+    .map(c => String(c.value).toLowerCase())
+    .filter(value => !items.includes(value));
+  const wanted = String(picked == null ? '' : picked).toLowerCase();
+  const next = remaining.includes(wanted) ? wanted : (remaining[0] || '');
+  if (!next) return items;
+  items.push(next);
+  return items;
+}
+function setDriverChainValue(key, chain) {
+  CONFIG_PENDING_UPDATES[key] = (Array.isArray(chain) ? chain : []).join(', ');
+  closeConfigEpSelects();
+  renderConfigLayoutV2();
+}
+function renderDriverChainList(f) {
+  const chain = driverChainItems(f);
+  const rows = chain.map((item, index) => `
+    <li class="config-chain-item">
+      <span class="config-chain-order">${index + 1}</span>
+      <span class="config-chain-name">${esc(driverChainLabel(f, item))}</span>
+      <code class="config-chain-id">${esc(item)}</code>
+      <span class="config-chain-actions">
+        <button type="button" class="config-chain-btn" data-chain-action="up" data-chain-key="${attrEsc(f.key)}" data-chain-index="${index}"${index === 0 ? ' disabled' : ''} aria-label="上移">↑</button>
+        <button type="button" class="config-chain-btn" data-chain-action="down" data-chain-key="${attrEsc(f.key)}" data-chain-index="${index}"${index === chain.length - 1 ? ' disabled' : ''} aria-label="下移">↓</button>
+        <button type="button" class="config-chain-btn" data-chain-action="remove" data-chain-key="${attrEsc(f.key)}" data-chain-index="${index}" aria-label="移除">✕</button>
+      </span>
+    </li>
+  `).join('');
+  const remaining = driverChainRemaining(f);
+  const selectId = `configChainAdd-${f.key}`;
+  const addRow = remaining.length ? `
+    <div class="config-chain-add">
+      <select id="${attrEsc(selectId)}" aria-label="${attrEsc(f.label || f.key)}：选择要添加的途径">
+        ${remaining.map(c => `<option value="${attrEsc(c.value)}">${esc(c.label || c.value)}</option>`).join('')}
+      </select>
+      <button type="button" class="btn" data-chain-append="${attrEsc(f.key)}" data-chain-select="${attrEsc(selectId)}">＋ 添加为下一层</button>
+    </div>
+  ` : '';
+  return `
+    <div class="config-chain" data-chain-field="${attrEsc(f.key)}">
+      <ol class="config-chain-list">
+        ${rows || '<li class="config-chain-empty">尚未选择途径，请从下方添加</li>'}
+      </ol>
+      ${addRow}
+      <p class="config-chain-hint">自上而下按优先级执行，当前层整体失败才切换到下一层。</p>
+      <input type="hidden" data-key="${attrEsc(f.key)}" value="${attrEsc(chain.join(', '))}">
+    </div>
+  `;
+}
 function getRegistrationDriverField() {
   return (CONFIG || []).find(f => f.key === 'REGISTRATION_DRIVER') || null;
 }
 function getRegistrationDriverValue() {
   const f = getRegistrationDriverField();
   if (!f) return 'protocol';
-  const fv = Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, f.key) ? CONFIG_PENDING_UPDATES[f.key] : f.value;
-  return String(fv == null ? 'protocol' : fv).trim().toLowerCase() || 'protocol';
+  return driverChainFieldValue(f).trim().toLowerCase() || 'protocol';
 }
 function getAutoPlanCheckField() {
   return (CONFIG || []).find(f => f.key === 'AUTO_PLAN_CHECK_AFTER_REGISTER') || null;
@@ -5012,9 +5146,14 @@ function getAutoPlanCheckValue() {
   return !!fv;
 }
 function registrationDriverLabel(value) {
-  const cur = String(value || '').trim().toLowerCase();
-  const hit = registrationDriverChoices().find(c => String(c.value) === cur);
-  return hit ? String(hit.label || hit.value) : (cur || '—');
+  const chain = parseDriverChainText(value);
+  if (!chain.length) return '—';
+  return chain
+    .map(item => {
+      const hit = registrationDriverChoices().find(c => String(c.value) === item);
+      return hit ? String(hit.label || hit.value) : item;
+    })
+    .join(' → ');
 }
 function closeConfigEpSelects(exceptId) {
   document.querySelectorAll('.config-ep-select.open').forEach(el => {
@@ -5031,29 +5170,10 @@ function toggleConfigEpSelect(wrapId, e) {
   wrap.classList.toggle('open', willOpen);
 }
 function setRegistrationDriverValue(value) {
-  const cur = String(value || 'protocol').trim().toLowerCase() || 'protocol';
-  CONFIG_PENDING_UPDATES.REGISTRATION_DRIVER = cur;
-  closeConfigEpSelects();
-  renderRegistrationDriverCard();
-  const sectionMount = document.getElementById('configRegistrationSelectV2');
-  if (sectionMount) renderRegistrationEpSelect(sectionMount, 'configRegistrationSelectV2');
+  const chain = Array.isArray(value) ? value : parseDriverChainText(value);
+  setDriverChainValue('REGISTRATION_DRIVER', chain.length ? chain : ['protocol']);
   bindRoxyWorkspaceToolsV2();
   bindCloudMailToolsV2();
-}
-function renderRegistrationEpSelect(mount, wrapId) {
-  if (!mount) return;
-  const cur = getRegistrationDriverValue();
-  const label = registrationDriverLabel(cur);
-  const items = registrationDriverChoices().map(c => `
-    <button type="button" class="config-ep-select-item${c.value === cur ? ' is-active' : ''}" role="option" data-driver-value="${attrEsc(c.value)}">${esc(c.label)}</button>
-  `).join('');
-  mount.className = 'config-ep-select';
-  mount.id = wrapId;
-  mount.innerHTML = `
-    <button type="button" class="config-ep-select-btn" data-ep-toggle="${attrEsc(wrapId)}">${esc(label)}</button>
-    <div class="config-ep-select-menu" role="listbox">${items}</div>
-    <input type="hidden" data-key="REGISTRATION_DRIVER" value="${attrEsc(cur)}">
-  `;
 }
 function renderRegistrationDriverCard() {
   const cur = getRegistrationDriverValue();
@@ -5068,11 +5188,11 @@ function renderRegistrationDriverCard() {
 }
 function renderRegistrationDriverField(f) {
   return `
-    <label class="fld config-select-v2-field">
-      注册方式
-      <span class="hint">选择注册所用的自动化方式</span>
-      <div class="config-ep-select" id="configRegistrationSelectV2"></div>
-    </label>
+    <div class="fld config-select-v2-field">
+      注册方式（多途径优先级）
+      <span class="hint">按顺序尝试多个途径：第一层整体失败（没产出账号）才换第二层；只选一个就是单层</span>
+      ${renderDriverChainList(f)}
+    </div>
   `;
 }
 function renderRegistrationSettingsSection(fields) {
@@ -5131,6 +5251,17 @@ function renderConfigRecommendedLinks(f) {
 function renderConfigPlainFieldV2(f) {
   const fv = Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, f.key) ? CONFIG_PENDING_UPDATES[f.key] : f.value;
   let control = '';
+  if (f.chain && Array.isArray(f.choices) && f.choices.length) {
+    // 多途径优先级链：可视化排序，保存时仍是逗号分隔的字符串。
+    const field = `
+      <div class="fld">
+        ${esc(f.label)}
+        <span class="hint">${esc(f.help || '')}</span>
+        ${renderDriverChainList(f)}
+      </div>
+    `;
+    return field + renderConfigRecommendedLinks(f);
+  }
   if (Array.isArray(f.choices) && f.choices.length) {
     control = `<select data-key="${attrEsc(f.key)}">${f.choices.map(item => `<option value="${attrEsc(item.value)}"${String(fv) === String(item.value) ? ' selected' : ''}>${esc(item.label || item.value)}</option>`).join('')}</select>`;
   } else if (f.type === 'int') {
@@ -5188,41 +5319,33 @@ function codexOauthDriverChoices() {
 function getCodexOauthDriverValue() {
   const f = (CONFIG || []).find(x => x.key === 'CODEX_OAUTH_DRIVER');
   if (!f) return 'protocol';
-  const fv = Object.prototype.hasOwnProperty.call(CONFIG_PENDING_UPDATES, f.key) ? CONFIG_PENDING_UPDATES[f.key] : f.value;
-  return String(fv == null ? 'protocol' : fv).trim().toLowerCase() || 'protocol';
+  return driverChainFieldValue(f).trim().toLowerCase() || 'protocol';
 }
 function codexOauthDriverLabel(value) {
-  const cur = String(value || '').trim().toLowerCase();
-  const hit = codexOauthDriverChoices().find(c => String(c.value) === cur);
-  return hit ? String(hit.label || hit.value) : (cur || '—');
+  const chain = parseDriverChainText(value);
+  if (!chain.length) return '—';
+  return chain
+    .map(item => {
+      const hit = codexOauthDriverChoices().find(c => String(c.value) === item);
+      return hit ? String(hit.label || hit.value) : item;
+    })
+    .join(' → ');
 }
 function setCodexOauthDriverValue(value) {
-  const cur = String(value || 'protocol').trim().toLowerCase() || 'protocol';
-  CONFIG_PENDING_UPDATES.CODEX_OAUTH_DRIVER = cur;
-  closeConfigEpSelects();
-  renderConfigLayoutV2();
+  const chain = Array.isArray(value) ? value : parseDriverChainText(value);
+  setDriverChainValue('CODEX_OAUTH_DRIVER', chain.length ? chain : ['protocol']);
 }
-function renderCodexOauthDriverField() {
-  const cur = getCodexOauthDriverValue();
-  const label = codexOauthDriverLabel(cur);
-  const wrapId = 'configCodexOauthSelectV2';
-  const items = codexOauthDriverChoices().map(c => `
-    <button type="button" class="config-ep-select-item${c.value === cur ? ' is-active' : ''}" role="option" data-codex-oauth-value="${attrEsc(c.value)}">${esc(c.label)}</button>
-  `).join('');
+function renderCodexOauthDriverField(f) {
   return `
-    <label class="fld config-select-v2-field">
-      Codex 授权驱动
-      <span class="hint">选择 Codex 授权所用的自动化方式</span>
-      <div class="config-ep-select" id="${wrapId}">
-        <button type="button" class="config-ep-select-btn" data-ep-toggle="${wrapId}">${esc(label)}</button>
-        <div class="config-ep-select-menu" role="listbox">${items}</div>
-        <input type="hidden" data-key="CODEX_OAUTH_DRIVER" value="${attrEsc(cur)}">
-      </div>
-    </label>
+    <div class="fld config-select-v2-field">
+      Codex 授权驱动（多途径优先级）
+      <span class="hint">按顺序尝试多个途径：第一层整体失败（没拿到授权凭据）才换第二层；只选一个就是单层</span>
+      ${renderDriverChainList(f)}
+    </div>
   `;
 }
 function renderCodexFieldV2(f) {
-  if (f.key === 'CODEX_OAUTH_DRIVER') return renderCodexOauthDriverField();
+  if (f.key === 'CODEX_OAUTH_DRIVER') return renderCodexOauthDriverField(f);
   if (f.type === 'bool') return renderFeatureSwitchField(f, { withIcon: false });
   return renderConfigPlainFieldV2(f);
 }
@@ -5500,8 +5623,6 @@ function renderConfigLayoutV2() {
   `).join('');
   sections.innerHTML = names.map(name => renderConfigSectionV2(name, groups[name] || [])).join('');
   renderRegistrationDriverCard();
-  const sectionMount = document.getElementById('configRegistrationSelectV2');
-  if (sectionMount) renderRegistrationEpSelect(sectionMount, 'configRegistrationSelectV2');
   bindRoxyWorkspaceToolsV2();
   bindCloudMailToolsV2();
 }
@@ -5549,6 +5670,33 @@ function bindConfigLayoutV2() {
         e.preventDefault();
         CONFIG_SMS_ACTIVE_SECTION_V2 = smsTab.dataset.smsSectionV2;
         renderConfigLayoutV2();
+        return;
+      }
+      const chainBtn = e.target.closest('[data-chain-action]');
+      if (chainBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        const chainField = (CONFIG || []).find(x => x.key === chainBtn.dataset.chainKey);
+        if (chainField) {
+          const next = applyDriverChainAction(
+            driverChainItems(chainField), chainBtn.dataset.chainAction, Number(chainBtn.dataset.chainIndex),
+          );
+          setDriverChainValue(chainField.key, next);
+        }
+        return;
+      }
+      const chainAdd = e.target.closest('[data-chain-append]');
+      if (chainAdd) {
+        e.preventDefault();
+        e.stopPropagation();
+        const chainField = (CONFIG || []).find(x => x.key === chainAdd.dataset.chainAppend);
+        if (chainField) {
+          const picker = document.getElementById(chainAdd.dataset.chainSelect || '');
+          const next = driverChainAppendValue(
+            driverChainItems(chainField), driverChainChoices(chainField), picker ? picker.value : '',
+          );
+          setDriverChainValue(chainField.key, next);
+        }
         return;
       }
       const toggle = e.target.closest('[data-ep-toggle]');

@@ -284,6 +284,17 @@ def test_cancelled_startup_closes_resources(runtime):
     runtime.relay.close.assert_called_once_with()
 
 
+def test_cloak_element_text_reads_dom_text_without_selenium_property():
+    class ElementHandle:
+        def evaluate(self, expression, arg=None):
+            assert "innerText" in expression
+            return "メールを再送信"
+
+    element = cloak.CloakElement(Mock(), handle=ElementHandle())
+
+    assert element.text == "メールを再送信"
+
+
 def test_execute_script_with_element_argument_uses_evaluate_not_handle():
     class ElementHandle:
         def evaluate(self, expression, arg=None):

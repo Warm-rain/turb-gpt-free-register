@@ -151,6 +151,44 @@ def test_filters_apply_to_lookup_ids_and_plan_check_snapshot(mixed_accounts):
     assert snapshot["total"] == 2
     at_snapshot = db.list_account_plan_check_statuses(limit=50, at_filter="expired")
     assert all(item["at_expired"] is True for item in at_snapshot["items"])
+    # 轻量轮询同样带回状态与自动推算的到期时间，避免列表时间在轮询后被旧值覆盖。
+    assert all(item["at_state"] == "expired" for item in at_snapshot["items"])
+    assert all(item["at_expires_at"] for item in at_snapshot["items"])
+
+
+def test_account_at_expiry_time_is_derived_automatically(mixed_accounts, client):
+    """到期时间无需手动查询：套餐写回的值优先，缺失时直接解析 access_token 的 JWT exp。"""
+    rows = client.get(
+        "/api/accounts?paged=1&page_size=50&archived=all", headers=AUTH
+    ).get_json()["items"]
+    by_id = {row["id"]: row for row in rows}
+
+    # 从未查过套餐的账号：直接解析 JWT exp 得到到期时间。
+    jwt_valid = by_id[mixed_accounts["jwt_valid"]]
+    assert jwt_valid["at_state"] == "valid"
+    assert jwt_valid["at_expired"] is False
+    assert jwt_valid["at_expires_at"].endswith("Z")
+    expires = datetime.fromisoformat(jwt_valid["at_expires_at"].replace("Z", "+00:00"))
+    assert expires > datetime.now(tz=timezone.utc)
+
+    jwt_expired = by_id[mixed_accounts["jwt_expired"]]
+    assert jwt_expired["at_state"] == "expired"
+    assert jwt_expired["at_expires_at"]
+
+    # 标记已过期但 AT 尚未到点：状态按标记，时间仍显示套餐查询写回的值。
+    flag_expired = by_id[mixed_accounts["flag_expired"]]
+    assert flag_expired["at_state"] == "expired"
+    assert flag_expired["at_expires_at"]
+
+    # 非 JWT 且没有任何过期信息：状态 unknown，且不返回到期时间字段。
+    unknown = by_id[mixed_accounts["unknown"]]
+    assert unknown["at_state"] == "unknown"
+    assert "at_expires_at" not in unknown
+
+    # 列表与筛选共用同一判定：筛出来的过期账号状态一律是 expired。
+    expired = db.list_accounts_page(limit=50, at_filter="expired")["items"]
+    assert all(item["at_state"] == "expired" for item in expired)
+    assert all(item["at_expires_at"] for item in expired)
 
 
 @pytest.fixture

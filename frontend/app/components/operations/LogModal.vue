@@ -119,6 +119,10 @@ function download() {
         >
           {{ job.error_message || job.progress_message || job.stage }}
         </p>
+        <p v-if="job.batch" class="muted log-batch">
+          所属批次：{{ job.batch.label || job.batch.id }} · {{ job.batch.total }} 个任务 ·
+          {{ job.batch.status === "completed" ? "已完成" : "进行中" }}
+        </p>
       </div>
       <div v-if="failure" class="alert alert-error" role="alert">
         {{ failure }}
