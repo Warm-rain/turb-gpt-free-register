@@ -77,7 +77,7 @@ def test_isolated_timeout_does_not_launch_and_closes_prepared_relay(runtime, mon
     relay = Mock(spec=["close"])
     monkeypatch.setattr(proxy_cfg, "pick_proxy", lambda: "http://pool.example:8080")
     monkeypatch.setattr(proxy_chain, "open_proxy_pool_proxy",
-                        lambda proxy: ("http://127.0.0.1:18080", relay))
+                        lambda proxy, measure_transport=False: ("http://127.0.0.1:18080", relay))
     acquire = Mock(side_effect=TimeoutError("capacity exhausted"))
     monkeypatch.setattr(runtime.gate, "acquire", acquire)
     with pytest.raises(TimeoutError, match="capacity exhausted"):

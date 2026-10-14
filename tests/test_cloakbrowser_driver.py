@@ -60,10 +60,17 @@ def runtime(monkeypatch):
     open_proxy = Mock(return_value=("http://127.0.0.1:18080", relay))
     monkeypatch.setattr(proxy_cfg, "pick_proxy", pick_proxy)
     monkeypatch.setattr(proxy_chain, "open_proxy_pool_proxy", open_proxy)
+    # 显式代理分支同样走本地中继（合并上游流量计量后），这里替身避免真实监听端口。
+    explicit_relay = Mock(spec=["close", "proxy_url", "traffic_snapshot", "start"])
+    explicit_relay.proxy_url = "http://127.0.0.1:18081"
+    explicit_relay.start.return_value = explicit_relay
+    explicit_relay_cls = Mock(return_value=explicit_relay)
+    monkeypatch.setattr(proxy_chain, "ProxyChainRelay", explicit_relay_cls)
     return SimpleNamespace(
         cfg=cfg, locale=locale, package=package,
         browser=browser, context=context, page=page,
         pick_proxy=pick_proxy, open_proxy=open_proxy, relay=relay,
+        explicit_relay=explicit_relay, explicit_relay_cls=explicit_relay_cls,
     )
 
 
@@ -106,18 +113,27 @@ def test_proxy_selection_respects_force_and_explicit_direct(
 
     enabled = configured_proxy or force_proxy
     from_pool = enabled and proxy is None
+    explicit = enabled and bool(proxy)
     expected_proxy = (
         "http://127.0.0.1:18080" if from_pool
-        else "socks5://user:pass@proxy.example:1080" if enabled and proxy
+        else "http://127.0.0.1:18081" if explicit
         else None
     )
     if from_pool:
         runtime.pick_proxy.assert_called_once_with()
-        runtime.open_proxy.assert_called_once_with("http://pool.example:8080")
+        # 合并上游"省流量统计"后，池代理统一走计量中继以统计代理层传输量。
+        runtime.open_proxy.assert_called_once_with("http://pool.example:8080", measure_transport=True)
         assert driver._proxy_relay is runtime.relay
+    elif explicit:
+        # 显式代理改走本地中继：统一 exit 行为并让代理层传输量可被统计。
+        runtime.pick_proxy.assert_not_called()
+        runtime.open_proxy.assert_not_called()
+        runtime.explicit_relay_cls.assert_called_once_with(" socks5h://user:pass@proxy.example:1080 ")
+        assert driver._proxy_relay is runtime.explicit_relay
     else:
         runtime.pick_proxy.assert_not_called()
         runtime.open_proxy.assert_not_called()
+        runtime.explicit_relay_cls.assert_not_called()
         assert driver._proxy_relay is None
     options = runtime.package.launch.call_args.kwargs
     assert options.get("proxy") == expected_proxy
@@ -125,13 +141,17 @@ def test_proxy_selection_respects_force_and_explicit_direct(
         assert "proxy" not in options
     assert opened.raw["proxy"] == expected_proxy
     assert opened.raw["proxy_pool_target"] == (
-        "http://pool.example:8080" if from_pool else expected_proxy
+        "http://pool.example:8080" if from_pool
+        else "socks5h://user:pass@proxy.example:1080" if explicit
+        else expected_proxy
     )
     runtime.locale.assert_called_once_with(expected_proxy)
     runtime.relay.close.assert_not_called()
     driver.quit()
     if from_pool:
         runtime.relay.close.assert_called_once_with()
+    elif explicit:
+        runtime.explicit_relay.close.assert_called_once_with()
     else:
         runtime.relay.close.assert_not_called()
 

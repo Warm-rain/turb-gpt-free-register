@@ -11,7 +11,7 @@ from config import cloakbrowser as _cfg
 from config import twofa as _twofa_cfg
 from core.account_export import save_account_data, post_register_dwell, registration_timestamp
 from core.browser_data_saver import BrowserDataSaver
-from core.browser_traffic import PlaywrightTrafficTracker
+from core.browser_traffic import PlaywrightTrafficTracker, merge_proxy_transport_traffic
 from core.cloakbrowser_driver import build_cloak_driver
 from core.email_provider import acquire_email_after_input, wait_for_otp, resolve_email_source
 from core.humanize import delay as human_delay
@@ -77,6 +77,14 @@ def run_cloak_registration(
                 network_traffic = tracker.stop()
             except Exception:
                 logger.warning("[Cloak注册] 汇总流量统计失败", exc_info=True)
+        # 代理层传输量（CDP 之外的流量）一并并入统计，避免低估真实消耗。
+        if driver is not None:
+            try:
+                network_traffic = merge_proxy_transport_traffic(
+                    network_traffic, driver.proxy_transport_snapshot(), label="Cloak"
+                )
+            except Exception:
+                logger.warning("[Cloak注册] 合并代理传输流量失败", exc_info=True)
         if saver is not None:
             try:
                 saver.stop()

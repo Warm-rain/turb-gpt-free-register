@@ -281,6 +281,7 @@ def follow_authorize(session: BrowserSession, authorize_url: str) -> str:
             return final_url
         except Exception as exc:
             last_exc = exc
+            # 403/429/5xx 统一走 _is_retryable_authorize_error 判定，避免同一语义出现两套重试分支。
             if not _is_retryable_authorize_error(exc):
                 # 非临时性错误（比如 4xx 业务错误）直接抛出，不重试
                 raise

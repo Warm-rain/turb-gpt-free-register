@@ -14,7 +14,7 @@ _CLIENTS = {
     "imap": "imap_mail_client", "cloudflare_domain": "qqmail_client",
     "cloudflare": "cf_temp_mail_client", "gptmail": "gptmail_client",
     "mailnest": "mailnest_client", "cloudmail": "cloudmail_client",
-    "remail": "remail_client",
+    "remail": "remail_client", "xigua": "xigua_client",
 }
 
 

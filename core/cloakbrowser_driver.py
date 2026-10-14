@@ -428,6 +428,13 @@ class CloakSeleniumDriver:
             self._gate_slot = False
             _BROWSER_GATE.release()
 
+    def proxy_transport_snapshot(self) -> dict | None:
+        relay = self._proxy_relay
+        try:
+            return relay.traffic_snapshot() if relay is not None else None
+        except Exception:
+            return None
+
     def find_elements(self, by: Any, selector: str) -> list[CloakElement]:
         loc = self._locator(by, selector)
         try:
@@ -756,7 +763,16 @@ def build_cloak_driver(
             else:
                 from core.proxy_chain import open_proxy_pool_proxy
                 proxy_pool_target = str(pick_proxy() or "").strip()
-                proxy, proxy_relay = open_proxy_pool_proxy(proxy_pool_target)
+                # measure_transport=True 让中继顺带统计代理层传输量，注册结束后并入流量报表。
+                proxy, proxy_relay = open_proxy_pool_proxy(proxy_pool_target, measure_transport=True)
+        elif proxy and use_proxy:
+            # 显式指定代理：走本地中继，既统一 exit 行为也能统计传输量。
+            from core.proxy_chain import ProxyChainRelay
+            from core.proxy_utils import parse_proxy_url
+            proxy_pool_target = str(proxy).strip()
+            if parse_proxy_url(proxy).scheme in {"http", "socks5", "socks5h"}:
+                proxy_relay = ProxyChainRelay(proxy).start()
+                proxy = proxy_relay.proxy_url
         try:
             from cloakbrowser import launch, launch_persistent_context
         except ImportError as exc:

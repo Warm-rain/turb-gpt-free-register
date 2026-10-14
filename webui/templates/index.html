@@ -363,7 +363,7 @@
             <select id="promoTypeFilterV2"><option value="">全部</option><option value="plus">Plus</option><option value="pro">Pro</option><option value="go">Go</option><option value="team">Team</option><option value="business">Business</option></select>
           </label>
           <label class="acc-v2-inline" title="按 eligible_promo_campaigns 优惠百分比筛选">优惠力度
-            <select id="promoDiscountFilterV2"><option value="">全部</option><option value="100">100%优惠</option></select>
+            <select id="promoDiscountFilterV2"><option value="">全部</option><option value="100">100%优惠</option><option value="50">50%优惠</option></select>
           </label>
           <button type="button" class="acc-v2-toggle" id="showFreeAccountsOnlyV2" aria-pressed="false" title="只查询/显示已明确不能试用套餐的 free 账号；资格未知的账号不包含">free不可试用套餐</button>
           <label class="acc-v2-inline" title="按账号状态筛选账号">
@@ -855,7 +855,7 @@
       <label class="outlook-import-field"><span>新邮箱来源</span><select id="emailChangeSourceV2">
         <option value="outlook">Outlook 邮箱池</option><option value="generic_api">通用 API</option><option value="imap">通用 IMAP</option>
         <option value="cloudflare_domain">Cloudflare 域名邮箱</option><option value="cloudflare">Cloudflare 临时邮箱</option>
-        <option value="gptmail">GPTMail</option><option value="mailnest">MailNest</option><option value="cloudmail">CloudMail</option><option value="remail">Remail</option>
+        <option value="gptmail">GPTMail</option><option value="mailnest">MailNest</option><option value="cloudmail">CloudMail</option><option value="remail">Remail</option><option value="xigua">西瓜</option>
       </select></label>
       <label class="outlook-import-field"><span>邮箱后缀（可选）</span><input id="emailChangeSuffixV2" type="text" placeholder="例如 outlook.com 或 @outlook.com" autocomplete="off" spellcheck="false"><div class="email-suffix-presets" aria-label="常用邮箱后缀"><span class="email-suffix-presets-label">常用：</span><button type="button" class="email-suffix-preset" data-email-suffix="icloud.com">icloud.com</button><button type="button" class="email-suffix-preset" data-email-suffix="outook.com">outook.com</button><button type="button" class="email-suffix-preset" data-email-suffix="dr.com">dr.com</button><button type="button" class="email-suffix-preset" data-email-suffix="duck.com">duck.com</button></div><small id="emailChangeSuffixHintV2">留空使用来源默认规则；填写后只领取该后缀的邮箱，邮箱池需有匹配的可用地址。</small></label>
       <div class="banner warn">换绑成功后当前 access_token 会失效并被清空，系统会立即使用新邮箱自动查活并刷新 AT。原邮箱会保留在账号记录中。</div>
