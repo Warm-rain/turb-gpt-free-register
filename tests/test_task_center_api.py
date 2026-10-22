@@ -4,8 +4,17 @@ from unittest.mock import patch
 
 import pytest
 
-from core import db, plus_activation_store
+from core import db, live_check_service, plus_activation_store, task_control
 from webui.app import create_app
+
+
+@pytest.fixture(autouse=True)
+def clean_task_state():
+    """每个用例后清掉任务控制对象与入队占用，避免用例之间互相污染。"""
+    yield
+    task_control.clear_controls()
+    with live_check_service._LOCK:
+        live_check_service._RUNNING.clear()
 
 
 @pytest.fixture

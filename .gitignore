@@ -39,6 +39,7 @@ __pycache__/
 *.sqlite3-wal
 *.sqlite3-shm
 *.runtime.lock
+*.inspection.lock
 .venv/
 *.py[cod]
 *$py.class
@@ -48,6 +49,7 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 cache/roxy-assets/
+cache/mailcode/
 
 # 历史调试输出（_xxx.out / _xxx_dump.html）
 tools/_*.out

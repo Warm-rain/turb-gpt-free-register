@@ -34,7 +34,7 @@ _GIT_ENV = {
 def _git(repo, *args):
     done = subprocess.run(
         ["git", *args], cwd=str(repo), env={**os.environ, **_GIT_ENV},
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     assert done.returncode == 0, f"git {' '.join(args)} 失败：{done.stderr}"
     return done.stdout.strip()

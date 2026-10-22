@@ -6,6 +6,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import Callable
 from urllib.parse import parse_qs, urljoin, urlparse
 
 import pyotp
@@ -886,6 +887,7 @@ def _login_via_full_web_flow(
         proxy,
         fingerprint_state=fingerprint_state,
     )
+    # 预检返回后本函数持有会话；只有成功返回才把释放责任移交给上层。
     try:
         otp_after_ts = time.time()
         final_url = follow_authorize(session, authorize_url)
@@ -908,7 +910,7 @@ def _login_via_full_web_flow(
         try:
             close_browser_session(session)
         except Exception:
-            pass
+            logger.warning("[查活] 登录失败后的会话清理异常", exc_info=True)
         raise
 
 
@@ -998,9 +1000,10 @@ def check_account_liveness(
     email_source: str | None = None,
     fingerprint_state: dict | None = None,
     driver: str | None = None,
+    on_authenticated: Callable[[dict, BrowserSession], dict] | None = None,
 ) -> dict:
     """
-    重新登录账号并刷新最新 accessToken。
+    重新登录账号并刷新最新 accessToken，关闭会话前在原会话查询套餐。
 
     driver: 本次使用的查活途径（protocol / cloak）；不传时读取
     LIVE_CHECK_DRIVER 配置。途径链回退由 live_check_service 按层调用本函数。
@@ -1012,6 +1015,7 @@ def check_account_liveness(
         access_token: str?,
         session: dict?,
         checked_at: ISO,
+        plan_result: dict?,  # 查活成功时的同会话套餐查询结果；失败不影响查活 ok
         error: str?
       }
     """
@@ -1117,12 +1121,23 @@ def check_account_liveness(
                 email_source=email_source,
                 fingerprint_state=task_fingerprint_state,
             )
-        return _live_result(
+        result = _live_result(
             email, session_info, checked_at,
             proxy_used=session.proxy or None,
             fingerprint=_safe_fingerprint_for_account(session),
             fingerprint_text=_safe_fingerprint_text_for_account(session),
         )
+        if on_authenticated is not None:
+            return on_authenticated(result, session)
+        # 直接调用底层查活时也自动查询；业务队列通过 hook 先落库新 AT，再统一占用套餐任务。
+        try:
+            from core.chatgpt_plan import check_account_plan
+            from core.plan_check_service import _wait_for_rate_slot
+            _wait_for_rate_slot()
+            result["plan_result"] = check_account_plan(result["access_token"], session=session)
+        except Exception as exc:
+            result["plan_result"] = {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:200]}"}
+        return result
     except AccountUnusableError as exc:
         code = getattr(exc, "error_code", "") or detect_account_unusable_text(str(exc)) or "account_deactivated"
         logger.warning("[查活] 已废号：%s %s", email, code)
@@ -1148,7 +1163,11 @@ def check_account_liveness(
                     pass
             if fh is not None:
                 root_logger.removeHandler(fh)
-                fh.close()
+                try:
+                    fh.close()
+                except Exception:
+                    # 已保存的查活/套餐结果不应被日志文件关闭异常覆盖。
+                    logger.warning("[查活] 日志文件关闭失败", exc_info=True)
         finally:
             with _RUNNING_LOCK:
                 _RUNNING.discard(key)

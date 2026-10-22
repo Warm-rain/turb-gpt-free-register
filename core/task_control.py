@@ -130,15 +130,73 @@ class Control:
                 self._condition.wait(min(timeout, remaining))
 
 
-class _WorkItem:
-    __slots__ = ("fn", "args", "kwargs", "control", "on_cancel")
+class _PoolFuture:
+    """DynamicPool 的 Future 兼容视图。
 
-    def __init__(self, fn, args, kwargs, control, on_cancel):
+    任务池本身只关心队列与并发，但调用方（查活/套餐/巡检）需要等待结果、
+    识别"提交前被取消"，因此提交时返回这个轻量对象而不是裸 bool。
+    """
+
+    __slots__ = ("_event", "_result", "_exception", "_cancelled", "_callbacks", "_lock")
+
+    def __init__(self):
+        self._event = threading.Event()
+        self._result = None
+        self._exception: BaseException | None = None
+        self._cancelled = False
+        self._callbacks = []
+        self._lock = threading.Lock()
+
+    def __bool__(self) -> bool:
+        return True
+
+    def done(self) -> bool:
+        return self._event.is_set()
+
+    def cancelled(self) -> bool:
+        return self._cancelled
+
+    def result(self, timeout: float | None = None):
+        if not self._event.wait(timeout):
+            raise TimeoutError("任务尚未完成")
+        if self._exception is not None:
+            raise self._exception
+        return self._result
+
+    def add_done_callback(self, fn) -> None:
+        with self._lock:
+            if not self._event.is_set():
+                self._callbacks.append(fn)
+                return
+        self._invoke(fn)
+
+    def _invoke(self, fn) -> None:
+        try:
+            fn(self)
+        except Exception:
+            logger.exception("[TaskControl] Future 完成回调失败")
+
+    def _finish(self, *, result=None, exception: BaseException | None = None, cancelled: bool = False) -> None:
+        self._result = result
+        self._exception = exception
+        self._cancelled = cancelled
+        self._event.set()
+        with self._lock:
+            callbacks, self._callbacks = self._callbacks, []
+        for fn in callbacks:
+            self._invoke(fn)
+
+
+class _WorkItem:
+    __slots__ = ("fn", "args", "kwargs", "control", "on_cancel", "future")
+
+    def __init__(self, fn, args, kwargs, control, on_cancel, future: _PoolFuture | None = None):
         self.fn = fn
         self.args = args
         self.kwargs = kwargs
         self.control = control
         self.on_cancel = on_cancel
+        self.future = future if future is not None else _PoolFuture()
 
 
 class GatedCall:
@@ -253,11 +311,12 @@ class DynamicPool:
         with self._condition:
             if self._closed:
                 self._rejected += 1
+                item.future._finish(cancelled=True)
                 return False
             self._queue.append(item)
             self._spawn_locked()
             self._condition.notify_all()
-            return True
+            return item.future
 
     def set_workers(self, workers: int) -> int:
         """调整目标并发数并立即生效（调大马上加线程，调小只回收空闲线程）。"""
@@ -403,6 +462,7 @@ class DynamicPool:
                 return
             state = _STATE_RUNNING if item.control is None else item.control.state()
             if state == _STATE_CANCELLED:
+                item.future._finish(cancelled=True)
                 self._finish(cancelled=True)
                 self._notify_cancel(item)
                 continue
@@ -411,14 +471,17 @@ class DynamicPool:
                 continue
             _WORKER_LOCAL.pool = self
             try:
-                item.fn(*item.args, **item.kwargs)
+                outcome = item.fn(*item.args, **item.kwargs)
             except TaskCancelled:
                 logger.info("[TaskControl] %s 任务已在检查点取消", self.name)
+                item.future._finish(cancelled=True)
                 self._finish(cancelled=True)
-            except Exception:
+            except Exception as exc:
                 logger.exception("[TaskControl] %s 任务执行异常", self.name)
+                item.future._finish(exception=exc)
                 self._finish(cancelled=False)
             else:
+                item.future._finish(result=outcome)
                 self._finish(cancelled=False)
             finally:
                 del _WORKER_LOCAL.pool

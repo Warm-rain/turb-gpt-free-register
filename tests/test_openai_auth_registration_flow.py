@@ -150,8 +150,10 @@ class OpenAIRegistrationFlowTests(unittest.TestCase):
 
     def test_bundled_sentinel_sdk_matches_captured_20260810913b_source(self):
         sdk_path = Path(__file__).resolve().parents[1] / "sentinel" / "sdk.js"
+        # 校验源内容本身：Windows checkout 会把换行转成 CRLF，先归一化再比对。
+        content = sdk_path.read_bytes().replace(b"\r\n", b"\n")
         self.assertEqual(
-            hashlib.sha256(sdk_path.read_bytes()).hexdigest(),
+            hashlib.sha256(content).hexdigest(),
             "49d0284bf3eea8a59ebcad0e6b5dd8a53edd4c72606f15bbf51ebe5610a88efd",
         )
 

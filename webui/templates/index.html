@@ -363,7 +363,7 @@
             <select id="promoTypeFilterV2"><option value="">全部</option><option value="plus">Plus</option><option value="pro">Pro</option><option value="go">Go</option><option value="team">Team</option><option value="business">Business</option></select>
           </label>
           <label class="acc-v2-inline" title="按 eligible_promo_campaigns 优惠百分比筛选">优惠力度
-            <select id="promoDiscountFilterV2"><option value="">全部</option><option value="100">100%优惠</option><option value="50">50%优惠</option></select>
+            <select id="promoDiscountFilterV2"><option value="">全部</option><option value="100">100%优惠</option><option value="50">50%优惠</option><option value="other">其他优惠（非100%/50%）</option></select>
           </label>
           <button type="button" class="acc-v2-toggle" id="showFreeAccountsOnlyV2" aria-pressed="false" title="只查询/显示已明确不能试用套餐的 free 账号；资格未知的账号不包含">free不可试用套餐</button>
           <label class="acc-v2-inline" title="按账号状态筛选账号">
@@ -435,6 +435,8 @@
           <p id="accountsSelectionHelpV2">以下操作仅作用于已选账号；翻页保留选择，修改筛选会清空。选择超过后端单次上限时会自动分批提交。</p>
         </div>
         <div class="acc-v2-bulk-actions">
+          <button type="button" class="jobs-tb-btn" id="btnStartInspection" onclick="startAccountInspection()" title="按当前归档筛选巡检账号：本地解析 AT，失效后自动查活及查套餐">一键巡检</button>
+          <button type="button" class="jobs-tb-btn" onclick="openInspectionHistory()">巡检历史</button>
           <button type="button" class="jobs-tb-btn" id="btnCheckSelectedLiveV2" disabled onclick="checkSelectedLive()" title="重新登录选中账号；成功且未封号则标记正常，并刷新最新 AT/accessToken">查活</button>
           <button type="button" class="jobs-tb-btn" id="btnCheckSelectedPlansV2" disabled title="查询选中账号当前套餐；free 账号会检查 Plus 试用资格">查套餐</button>
           <button type="button" class="jobs-tb-btn" id="btnGroupSelectedAccountsV2" disabled title="在弹窗中勾选已有分组，将选中账号移入该分组">设置分组</button>
@@ -481,6 +483,7 @@
               <hr>
               <button type="button" class="jobs-tb-btn" id="btnArchiveSelectedAccountsV2" disabled title="归档选中的账号；默认账号列表将不再查询/显示这些账号">归档选中</button>
               <button type="button" class="jobs-tb-btn jobs-tb-btn--danger" id="btnDeleteSelectedAccountsV2" disabled title="删除选中的本地账号/token记录">删除选中账号</button>
+              <button type="button" class="jobs-tb-btn jobs-tb-btn--danger" id="btnDeleteDeactivatedAccounts" onclick="deleteDeactivatedAccounts()" title="删除当前归档范围内全部已废账号，不限当前页；不受其他筛选影响">一键删除已废</button>
             </div>
           </details>
         </div>
@@ -855,7 +858,7 @@
       <label class="outlook-import-field"><span>新邮箱来源</span><select id="emailChangeSourceV2">
         <option value="outlook">Outlook 邮箱池</option><option value="generic_api">通用 API</option><option value="imap">通用 IMAP</option>
         <option value="cloudflare_domain">Cloudflare 域名邮箱</option><option value="cloudflare">Cloudflare 临时邮箱</option>
-        <option value="gptmail">GPTMail</option><option value="mailnest">MailNest</option><option value="cloudmail">CloudMail</option><option value="remail">Remail</option><option value="xigua">西瓜</option>
+        <option value="gptmail">GPTMail</option><option value="mailnest">MailNest</option><option value="cloudmail">CloudMail</option><option value="remail">Remail</option><option value="mailcode">域名邮箱 MailCode</option><option value="xigua">西瓜</option>
       </select></label>
       <label class="outlook-import-field"><span>邮箱后缀（可选）</span><input id="emailChangeSuffixV2" type="text" placeholder="例如 outlook.com 或 @outlook.com" autocomplete="off" spellcheck="false"><div class="email-suffix-presets" aria-label="常用邮箱后缀"><span class="email-suffix-presets-label">常用：</span><button type="button" class="email-suffix-preset" data-email-suffix="icloud.com">icloud.com</button><button type="button" class="email-suffix-preset" data-email-suffix="outook.com">outook.com</button><button type="button" class="email-suffix-preset" data-email-suffix="dr.com">dr.com</button><button type="button" class="email-suffix-preset" data-email-suffix="duck.com">duck.com</button></div><small id="emailChangeSuffixHintV2">留空使用来源默认规则；填写后只领取该后缀的邮箱，邮箱池需有匹配的可用地址。</small></label>
       <div class="banner warn">换绑成功后当前 access_token 会失效并被清空，系统会立即使用新邮箱自动查活并刷新 AT。原邮箱会保留在账号记录中。</div>
@@ -876,5 +879,6 @@
 
 
 {% include 'promo_details.html' %}
+{% include 'account_inspections.html' %}
 </body>
 </html>

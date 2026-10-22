@@ -54,10 +54,10 @@ def test_round_trip_and_hot_reload(monkeypatch):
         "SMTP_ADMIN_EMAILS": "one@example.com;two@example.com\nthree@example.com,four@example.com",
         "SMTP_NOTIFY_TASKS": False, "SMTP_NOTIFY_UPLOADS": False, "SMTP_TIMEOUT": 30,
     }
-    original_source = Path(notifications.__file__).read_text()
+    original_source = Path(notifications.__file__).read_text(encoding="utf-8")
     result = config_editor.update_config(values)
     assert set(result["env_updated"]) == set(values)
-    assert Path(notifications.__file__).read_text() == original_source
+    assert Path(notifications.__file__).read_text(encoding="utf-8") == original_source
     assert env_loader.read_env_file()["SMTP_PASSWORD"] == values["SMTP_PASSWORD"]
     # Exercise real reload_all, restricting its scope to avoid unrelated modules' side effects.
     monkeypatch.setattr(config, "_RELOADABLE_SUBMODULES", ("config.notifications",))

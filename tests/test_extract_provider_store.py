@@ -80,7 +80,9 @@ class ExtractProviderStoreTests(unittest.TestCase):
             "name": "Lumen", "api_base": "https://lumen.example.test", "provider_type": "lumen",
             "default_link_type": "ideal", "enabled": True, "is_default": True, "note": "",
         })
-        with db._sqlite_conn() as conn:
+        # sqlite3 的 with 只提交事务不关闭连接，Windows 上会阻止临时目录清理。
+        conn = db._sqlite_conn()
+        try:
             conn.execute(
                 "INSERT INTO accounts(id,email,status,payload) VALUES(?,?,?,?)",
                 (91, "active@example.test", "", json.dumps({
@@ -88,6 +90,9 @@ class ExtractProviderStoreTests(unittest.TestCase):
                     "extract_link_provider_type": "lumen", "extract_link_status": "awaiting_blik",
                 })),
             )
+            conn.commit()
+        finally:
+            conn.close()
         with self.assertRaises(RuntimeError):
             store.save_provider({"api_base": "https://other.example.test"}, provider["id"])
         with self.assertRaises(RuntimeError):

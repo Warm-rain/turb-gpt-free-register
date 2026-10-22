@@ -63,13 +63,21 @@ class UiLookupTests(unittest.TestCase):
 
     def test_job_indexes_are_added_to_an_existing_database(self):
         db._save_collection('jobs', [{'id': 1, 'status': 'failed'}])
-        with db._sqlite_conn() as conn:
+        # sqlite3 的 with 只提交事务不关闭连接；Windows 上未关闭句柄会让临时目录清理失败。
+        conn = db._sqlite_conn()
+        try:
             conn.execute('DROP INDEX idx_registration_jobs_id')
             conn.execute('DROP INDEX idx_registration_jobs_successful_retry')
+            conn.commit()
+        finally:
+            conn.close()
         db._SQLITE_READY = False
         self.assertEqual(db.get_job(1)['id'], 1)
-        with db._sqlite_conn() as conn:
+        conn = db._sqlite_conn()
+        try:
             indexes = {row['name'] for row in conn.execute('PRAGMA index_list(registration_jobs)')}
+        finally:
+            conn.close()
         self.assertIn('idx_registration_jobs_id', indexes)
         self.assertIn('idx_registration_jobs_successful_retry', indexes)
 

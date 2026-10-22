@@ -113,6 +113,7 @@ def _git(args: list[str], *, timeout: int = _GIT_TIMEOUT, cwd: Path | None = Non
         env=env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         errors="replace",
         timeout=timeout,
         check=False,

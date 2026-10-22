@@ -1,11 +1,14 @@
 # -*- coding: utf-8 -*-
 import unittest
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from unittest.mock import patch
 
 from core import twofa_service
 
 
 class TwofaServiceSettingsTests(unittest.TestCase):
-    def test_executor_uses_configured_worker_count(self):
+    def test_executor_supports_runtime_configured_worker_count(self):
         settings = twofa_service.queue_settings()
 
         self.assertGreaterEqual(settings["workers"], 1)

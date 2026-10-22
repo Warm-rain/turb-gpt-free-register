@@ -110,13 +110,14 @@ def recover_startup(owner: DatabaseOwner) -> dict[str, int]:
     owner.assert_current()
     if owner.recovered:
         return {}
-    from core import plus_activation_store
+    from core import account_inspection_service, plus_activation_store
     recoveries = {
         "registration": _recover_registration_jobs,
         "plus_activation": plus_activation_store.recover_interrupted,
         "plan_check": db.recover_interrupted_plan_checks,
         "quota_check": db.recover_interrupted_quota_checks,
         "extract_link": db.recover_interrupted_extract_links,
+        "account_inspection": account_inspection_service.recover_startup,
         "live_check": db.recover_interrupted_live_checks,
         "codex_agent": db.recover_interrupted_codex_agents,
         "totp_setup": db.recover_interrupted_totp_setups,

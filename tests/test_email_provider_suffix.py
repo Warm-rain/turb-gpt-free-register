@@ -15,6 +15,7 @@ _CLIENTS = {
     "cloudflare": "cf_temp_mail_client", "gptmail": "gptmail_client",
     "mailnest": "mailnest_client", "cloudmail": "cloudmail_client",
     "remail": "remail_client", "xigua": "xigua_client",
+    "mailcode": "mailcode_client",
 }
 
 

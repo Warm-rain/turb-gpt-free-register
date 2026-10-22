@@ -73,7 +73,11 @@ def test_direct_retry_uses_fresh_sessions_and_saves_only_final_success(runner):
     assert all(entry.kwargs["email_source"] == "fixture-mail" for entry in runner.check.call_args_list)
     assert all(entry.kwargs["clear_log"] is False for entry in runner.check.call_args_list)
     assert runner.sleep.call_args_list == [call(2.0), call(4.0)]
-    runner.save.assert_called_once_with(4242, result)
+    runner.save.assert_called_once_with(
+        4242, result,
+        expected_account={"email": "retry@example.invalid", "access_token": ""},
+        expected_run_id=None,
+    )
     runner.slot.release.assert_called_once()
     assert 4242 not in service._RUNNING
 
@@ -128,7 +132,11 @@ def test_terminal_errors_do_not_restart_login(failure, runner):
     assert result["attempts"] == 1
     runner.check.assert_called_once()
     runner.sleep.assert_not_called()
-    runner.save.assert_called_once_with(4242, result)
+    runner.save.assert_called_once_with(
+        4242, result,
+        expected_account={"email": "retry@example.invalid", "access_token": ""},
+        expected_run_id=None,
+    )
 
 
 @pytest.mark.parametrize("code", ["invalid_password", "invalid_totp", "invalid_code"])
@@ -209,7 +217,11 @@ def test_retry_limit_is_enforced_and_logged(runner):
     assert runner.check.call_count == 3
     assert runner.sleep.call_count == 2
     assert any("重试次数已用尽" in entry.args[1] for entry in runner.log.call_args_list)
-    runner.save.assert_called_once_with(4242, result)
+    runner.save.assert_called_once_with(
+        4242, result,
+        expected_account={"email": "retry@example.invalid", "access_token": ""},
+        expected_run_id=None,
+    )
 
 
 def test_one_attempt_disables_full_login_retries(runner, monkeypatch):
