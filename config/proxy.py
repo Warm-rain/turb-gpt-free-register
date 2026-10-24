@@ -54,6 +54,17 @@ LIVE_CHECK_RETRY_DELAY = 2.0
 # Plus 试用资格时，等待该秒数后再复查一次；设为 0 可关闭复查。
 PLAN_CHECK_REGISTRATION_RECHECK_DELAY = 2.0
 
+# Plus 试用资格多出口交叉验证（probe）。依据 wangshen OSS 版 promo_check.py
+# 注释记录的作者观察（未独立复现）：同一账号 8 条出口 7 eligible / 1 not_eligible；
+# 同账号同出口多次检查会在 error / 零元 / 非零元之间变化。结论受出口与时点共同
+# 影响，单次负面不足为证，因此负面结论按下列配置换出口重复采样后统计定论。
+#   PLAN_CHECK_PROBE_ENABLED   = 是否启用；关闭后维持单次查询语义
+#   PLAN_CHECK_PROBE_ATTEMPTS  = 单个负面结论的重复采样次数（含换出口），1-10
+#   PLAN_CHECK_PROBE_INTERVAL  = 采样之间的间隔秒数，0-30
+PLAN_CHECK_PROBE_ENABLED = True
+PLAN_CHECK_PROBE_ATTEMPTS = 5
+PLAN_CHECK_PROBE_INTERVAL = 1.0
+
 # 自动、手动和批量套餐查询共用同一个后台队列；Codex Agent Token 使用独立队列，
 # 但复用这里的网络模式、请求启动间隔与随机抖动，避免批量后台请求过于集中。
 PLAN_CHECK_WORKERS = 3
@@ -129,6 +140,9 @@ apply_env_overrides(globals(), {
     'LIVE_CHECK_MAX_ATTEMPTS': 'int',
     'LIVE_CHECK_RETRY_DELAY': 'float',
     'PLAN_CHECK_REGISTRATION_RECHECK_DELAY': 'float',
+    'PLAN_CHECK_PROBE_ENABLED': 'bool',
+    'PLAN_CHECK_PROBE_ATTEMPTS': 'int',
+    'PLAN_CHECK_PROBE_INTERVAL': 'float',
     'PLAN_CHECK_WORKERS': 'int',
     'PLAN_CHECK_QUEUE_LIMIT': 'int',
     'PLAN_CHECK_MIN_INTERVAL': 'float',

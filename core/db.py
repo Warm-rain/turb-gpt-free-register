@@ -1405,6 +1405,7 @@ _PLAN_CHECK_FIELDS: tuple[str, ...] = (
 
         "id", "email", "archived", "group_name",
         "plan_type", "current_plan_type", "plus_trial_eligible",
+        "plus_trial_probe_conclusion",
         "eligible_promo_campaigns", "plus_trial_discount_percentage",
         "plan_check_status", "plan_check_ok", "plan_check_error",
         "plan_check_trigger", "plan_check_queued_at", "plan_check_started_at",
@@ -3099,6 +3100,9 @@ def update_account_plan_check(acc_id: int | None = None, email: str | None = Non
                     row[_k] = result.get(_k)
 
             row["plus_trial_eligible"] = bool(result.get("plus_trial_eligible"))
+            # 多出口交叉验证口径：eligible / not_eligible / inconclusive。
+            # 查询未触发 probe 时写 None，避免沿用上一次的采样结论。
+            row["plus_trial_probe_conclusion"] = result.get("plus_trial_probe_conclusion")
             row["plus_trial_campaign_id"] = result.get("plus_trial_campaign_id")
             row["plus_trial_title"] = result.get("plus_trial_title")
             row["plus_trial_discount_percentage"] = result.get("plus_trial_discount_percentage")

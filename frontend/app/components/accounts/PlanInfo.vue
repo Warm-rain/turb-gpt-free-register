@@ -60,6 +60,12 @@ const hiddenPromoCount = computed(() =>
         >待查资格</span
       >
       <span
+        v-else-if="info.probeLabel"
+        class="plan-chip chip-probe"
+        :title="info.probeTitle"
+        >{{ info.probeLabel }}</span
+      >
+      <span
         v-if="info.queryKind"
         class="plan-chip"
         :class="`chip-${info.queryKind}`"
@@ -123,6 +129,10 @@ const hiddenPromoCount = computed(() =>
         <div>
           <dt>最近成功</dt>
           <dd>{{ info.lastSuccess || "—" }}</dd>
+        </div>
+        <div v-if="info.probeConclusion">
+          <dt>资格交叉验证</dt>
+          <dd :title="info.probeTitle">{{ info.probeConclusionLabel || "—" }}</dd>
         </div>
         <div v-if="!info.paid && info.activeUntilLabel">
           <dt>订阅有效至</dt>
@@ -233,6 +243,12 @@ const hiddenPromoCount = computed(() =>
   background: #eef4ff;
   border-color: #c3d4fb;
   cursor: pointer;
+}
+/* 资格交叉验证未能定论：与"待查资格"的黄色区分开，表示已查过但结论未知 */
+.chip-probe {
+  color: #6d28d9;
+  background: #f5f0ff;
+  border-color: #ddd0fb;
 }
 .chip-promo:hover {
   background: #dde8ff;

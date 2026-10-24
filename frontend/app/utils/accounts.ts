@@ -164,6 +164,17 @@ export interface AccountPlanInfo {
   paid: boolean;
   trialEligible: boolean;
   eligibilityPending: boolean;
+  /**
+   * 资格多出口交叉验证结论（后端 plan_probe）：eligible / not_eligible /
+   * inconclusive / 空（未触发 probe）。inconclusive 表示负面结论不足以定论
+   * （单出口、只覆盖部分出口、采样出错或同出口结论漂移），资格状态是未知而非确认无资格。
+   */
+  probeConclusion: "" | "eligible" | "not_eligible" | "inconclusive";
+  /** 交叉验证提示徽标文本；仅在 inconclusive 时非空。 */
+  probeLabel: string;
+  probeTitle: string;
+  /** 详情视图里的交叉验证结论文本。 */
+  probeConclusionLabel: string;
   promos: AccountPlanPromo[];
   lines: string[];
   /** 订阅接口返回的有效期；与 lines 里的付费到期分开，供详情视图展示。 */
@@ -368,6 +379,18 @@ export function accountPlanInfo(account: Account): AccountPlanInfo {
     !checking &&
     !failed &&
     !account.plus_trial_eligible;
+  // 多出口交叉验证：把"未知"与"确认无资格"区分开，避免把采样不足读成否定结论。
+  const probeConclusion = String(account.plus_trial_probe_conclusion || "").toLowerCase();
+  const probeLabel =
+    !account.plus_trial_eligible && probeConclusion === "inconclusive" ? "资格未定" : "";
+  const probeTitle = probeLabel
+    ? "多出口交叉验证未能定论（采样覆盖不足、出现错误或同出口结论漂移）：资格未知，而非确认无资格"
+    : "";
+  const probeConclusionLabels: Record<string, string> = {
+    eligible: "任一出口采样命中资格",
+    not_eligible: "全出口一致无资格",
+    inconclusive: "未能定论（覆盖不足/出错/结论漂移）",
+  };
   return {
     name: rawPlan ? accountPlanLabel(rawPlan) : "尚未查询",
     label: rawPlan ? rawPlan.toLowerCase() : "尚未查询",
@@ -375,6 +398,10 @@ export function accountPlanInfo(account: Account): AccountPlanInfo {
     paid,
     trialEligible: Boolean(account.plus_trial_eligible),
     eligibilityPending,
+    probeConclusion: probeConclusion as AccountPlanInfo["probeConclusion"],
+    probeLabel,
+    probeTitle,
+    probeConclusionLabel: probeConclusionLabels[probeConclusion] || "",
     promos,
     lines,
     activeUntilLabel: account.subscription_active_until

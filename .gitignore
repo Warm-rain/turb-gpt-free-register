@@ -38,6 +38,7 @@ __pycache__/
 *.sqlite3
 *.sqlite3-wal
 *.sqlite3-shm
+*.sqlite3.bak-*
 *.runtime.lock
 *.inspection.lock
 .venv/

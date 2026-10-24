@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 from config import proxy as proxy_cfg
-from core import db, task_control
+from core import db, plan_probe, task_control
 from core.chatgpt_plan import check_account_plan
 
 logger = logging.getLogger(__name__)
@@ -62,6 +62,57 @@ def _wait_for_rate_slot() -> None:
 
 def _registration_recheck_delay() -> float:
     return _float_setting("PLAN_CHECK_REGISTRATION_RECHECK_DELAY", 2.0, 0.0, 30.0)
+
+
+def _probe_negative_conclusion(
+    result: dict,
+    *,
+    account_id: int,
+    email: str,
+    access_token: str,
+    trigger: str,
+    proxy: str | None,
+    session,
+) -> dict:
+    """wangshen 观察落地：单次 not_eligible 不足为证，换出口重复采样后按统计口径定论。
+
+    采样证据（各出口结论、分歧、同出口抖动）随结果一起写库，供事后审计。
+    """
+    if session is not None:
+        # 查活会话内同步查询不展开 probe：会话已被单条出口绑定，
+        # 展开多条独立会话会显著拖长查活持有时间。
+        return result
+    if not plan_probe.probe_applies(result):
+        return result
+    if not plan_probe.probe_settings()["enabled"]:
+        return result
+    try:
+        probe = plan_probe.probe_plus_trial_eligibility(
+            access_token,
+            base_proxy=proxy,
+            checkpoint=lambda: task_control.checkpoint(KIND, account_id),
+            rate_limiter=_wait_for_rate_slot,
+        )
+    except task_control.TaskCancelled:
+        raise
+    except Exception as exc:
+        logger.warning("[Plan] 资格交叉验证异常，保留首次查询结果: %s, %s", email, exc)
+        return result
+    merged = plan_probe.merge_probe_into_result(result, probe)
+    logger.info(
+        "[Plan] 资格交叉验证: %s, conclusion=%s, eligible=%s/%s, exits=%s/%s, "
+        "egress_divergence=%s, unstable=%s, trigger=%s",
+        email,
+        probe.get("conclusion"),
+        probe.get("eligible_count"),
+        probe.get("attempts"),
+        len(probe.get("sampled_exits") or []),
+        probe.get("pool_size"),
+        probe.get("egress_divergence"),
+        probe.get("unstable"),
+        trigger,
+    )
+    return merged
 
 
 def _run_plan_check(
@@ -121,6 +172,16 @@ def _run_plan_check(
                     email,
                     recheck_result.get("error") or "未知错误",
                 )
+
+        result = _probe_negative_conclusion(
+            result,
+            account_id=account_id,
+            email=email,
+            access_token=access_token,
+            trigger=trigger,
+            proxy=proxy,
+            session=session,
+        )
 
         if not db.update_account_plan_check(acc_id=account_id, result=result, expected_account=expected_account, expected_run_id=run_id):
             return {"ok": False, "error": "账号已删除或邮箱/AT 已变更，丢弃旧套餐结果"}

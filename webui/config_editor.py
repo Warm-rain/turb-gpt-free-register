@@ -797,6 +797,18 @@ EDITABLE_FIELDS = [
         "label": "新账号资格复查延迟(秒)", "help": "新注册 free 账号未发现试用资格或首次查询失败时复查一次；0 表示关闭",
     },
     {
+        "key": "PLAN_CHECK_PROBE_ENABLED", "file": "proxy.py", "type": "bool", "group": "代理池",
+        "label": "资格多出口交叉验证", "help": "免费账号未发现 Plus 试用资格时，按作者观察（同账号不同出口结论可能相反、同出口多次结论会漂移）换出口重复采样后统计定论；任一采样出现资格即判有资格",
+    },
+    {
+        "key": "PLAN_CHECK_PROBE_ATTEMPTS", "file": "proxy.py", "type": "int", "group": "代理池",
+        "label": "资格交叉验证采样次数", "help": "单个“未发现资格”结论的重复采样次数，含换出口轮换；建议 5 次，范围 1-10",
+    },
+    {
+        "key": "PLAN_CHECK_PROBE_INTERVAL", "file": "proxy.py", "type": "float", "group": "代理池",
+        "label": "资格交叉验证采样间隔(秒)", "help": "两次采样之间的等待时间，降低请求集中度；0 表示连续采样",
+    },
+    {
         "key": "PLAN_CHECK_WORKERS", "file": "proxy.py", "type": "int", "group": "代理池",
         "label": "套餐查询并发数", "help": "自动、手动和批量查套餐共用；Agent Token 生成使用独立队列；建议 2-4 个线程",
     },
